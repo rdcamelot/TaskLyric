@@ -1,0 +1,7 @@
+build/
+dist/
+logs/
+state/
+config/
+__pycache__/
+*.pyc
