@@ -1,14 +1,18 @@
-﻿# Native 灞傚疄鐜拌鏄?
-杩欎釜鐩綍鏆傛椂鍙斁瀹炵幇璇存槑锛屼笉鐩存帴鏀句竴涓亣鐨?DLL銆?
-鍘熷洜寰堢洿鎺ワ細
+﻿# Native Layer Plan
 
-- BetterNCM 鐨?`native_plugin` 涓嶆槸鏅€?Win32 DLL 鍚嶅瓧瀵逛笂灏辫兘宸ヤ綔
-- 濡傛灉鍦?`manifest.json` 閲屽０鏄庝竴涓繕娌″疄鐜板ソ鐨?DLL锛屾彃浠跺姞杞介樁娈靛氨鍙兘鐩存帴澶辫触
+这个目录暂时只放 native 层实现规划，不直接放一个假的 DLL。
 
-鎵€浠ュ綋鍓嶅仛娉曟槸锛?
-- 鍏堟妸 JS 渚ф帴鍙ｃ€佹瓕璇嶅悓姝ュ拰閰嶇疆闈㈡澘璺戦€?- native DLL 鐪熸鍐欏ソ鍚庯紝鍐嶆妸 `manifest.json` 澧炲姞 `native_plugin`
+原因很简单：
 
-## 寤鸿鐨?native 鐩綍缁撴瀯
+- BetterNCM 的 `native_plugin` 需要真实可加载的实现
+- 如果先在 `manifest.json` 里声明一个不存在或不可用的 DLL，插件加载阶段就可能失败
+
+所以当前策略是：
+
+- 先把 JS 侧歌词监听、歌词同步和配置面板稳定下来
+- 再补 native DLL
+
+## 建议目录结构
 
 ```text
 native/
@@ -24,36 +28,38 @@ native/
     text_renderer.cpp
 ```
 
-## 寤鸿鐨勫疄鐜板垎灞?
+## 建议分层
+
 ### `plugin_entry.cpp`
 
-- BetterNCM native 鎻掍欢鍏ュ彛
-- 鎺ユ敹 `tasklyric.config`
-- 鎺ユ敹 `tasklyric.update`
-- 杞彂鍒板崟渚嬬獥鍙ｆ帶鍒跺櫒
+- BetterNCM native 插件入口
+- 接收 `tasklyric.config`
+- 接收 `tasklyric.update`
+- 转发给窗口控制器
 
 ### `layout_probe.cpp`
 
-- 鏌ユ壘 `Shell_TrayWnd`
-- 鐢?UI Automation 璇嗗埆寮€濮嬫寜閽€佷换鍔″垪琛ㄣ€佺郴缁熸墭鐩樼瓑鍖哄煙
-- 璁＄畻姝岃瘝鍖哄煙
+- 查找 `Shell_TrayWnd`
+- 用 UI Automation 识别开始按钮、任务列表、系统托盘等区域
+- 计算歌词显示区域
 
 ### `taskbar_window.cpp`
 
-- 鍒涘缓 `WS_CHILD | WS_VISIBLE` 瀛愮獥鍙?- 鎸傚埌浠诲姟鏍忕獥鍙?- 澶勭悊绐楀彛鐢熷懡鍛ㄦ湡鍜岄噸甯冨眬
+- 创建 `WS_CHILD | WS_VISIBLE` 子窗口
+- 把窗口挂到任务栏窗口上
+- 处理重布局和生命周期
 
 ### `text_renderer.cpp`
 
-- Direct2D / DirectWrite 娓叉煋鍙岃姝岃瘝
-- 瀛椾綋銆侀槾褰便€佸榻愩€侀鑹茬瓑鏍峰紡鎺у埗
+- 用 Direct2D / DirectWrite 渲染双行歌词
+- 处理字体、阴影、颜色、对齐等样式
 
-## 鎶?native 鎺ヤ笂鍚庣殑 manifest 绀轰緥
+## 后续 manifest 配置
 
-绛?DLL 鐪熷啓濂戒箣鍚庯紝鍐嶆妸 `manifest.json` 鏀规垚锛?
+等 DLL 真正写好之后，再把 `manifest.json` 增加类似字段：
+
 ```json
 {
   "native_plugin": "native/tasklyric_native.dll"
 }
 ```
-
-瀛楁鍚堝苟鍒扮幇鏈?manifest 鍗冲彲銆?

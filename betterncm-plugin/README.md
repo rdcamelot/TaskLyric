@@ -1,38 +1,50 @@
-﻿# BetterNCM 浠诲姟鏍忔瓕璇嶉鏋?
-杩欎釜鐩綍鏄綘鐪熸鐩爣瀵瑰簲鐨勮矾绾匡細BetterNCM 鎻掍欢璐熻矗璇荤綉鏄撲簯鍐呴儴鎾斁浜嬩欢锛宯ative DLL 璐熻矗鎶婃瓕璇嶅祵鍒?Windows 浠诲姟鏍忛噷銆?
-褰撳墠鐘舵€侊細
+﻿# TaskLyric
 
-- `manifest.json` 宸茬粡鏄彲瀹夎鐨?BetterNCM 鎻掍欢楠ㄦ灦
-- `main.js` 宸茬粡鎺ヤ笂鎾斁浜嬩欢銆佹瓕璇嶈姹傘€丩RC 瑙ｆ瀽銆侀厤缃悓姝ュ拰 native bridge 璋冪敤
-- native 渚ц繕娌℃湁钀芥垚鐪熸鐨勪换鍔℃爮瀛愮獥鍙ｅ疄鐜帮紝鎵€浠ュ綋鍓嶇洰褰曟槸鈥淛S 渚у畬鏁达紝native 渚у緟鎺モ€?
-## 瀹夎鏂瑰紡
+这个目录是 `TaskLyric` 的 BetterNCM 插件骨架。
 
-1. 鎵撳紑 BetterNCM 鐨勬彃浠跺紑鍙戠洰褰曪紝涓€鑸槸 `plugins_dev`
-2. 鎶婃暣涓?`betterncm-plugin` 鏂囦欢澶规斁杩涘幓
-3. 閲嶅惎缃戞槗浜戦煶涔?/ BetterNCM
-4. 鍦?BetterNCM 鎻掍欢鍒楄〃閲屽惎鐢ㄨ繖涓彃浠?
-## 鐜板湪宸茬粡鍋氬ソ鐨勪簨
+目标是：
 
-鎻掍欢浼氱洃鍚細
+- BetterNCM 负责接入网易云音乐内部播放事件
+- native DLL 负责把歌词真正嵌入 Windows 任务栏
+
+当前状态：
+
+- `manifest.json` 已经是可安装的 BetterNCM 插件骨架
+- `main.js` 已经完成播放事件监听、歌词请求、LRC 解析、配置同步和 native bridge 调用
+- native 层还没有落成真正的任务栏子窗口实现
+
+## 安装方式
+
+1. 打开 BetterNCM 的插件开发目录，通常是 `plugins_dev`
+2. 把整个 `betterncm-plugin` 文件夹放进去
+3. 重启网易云音乐和 BetterNCM
+4. 在 BetterNCM 插件列表中启用 `TaskLyric`
+
+## 当前已实现
+
+插件会监听：
 
 - `audioplayer.onLoad`
 - `audioplayer.onPlayProgress`
 - `audioplayer.onPlayState`
 
-骞朵笖浼氾細
+并且会完成这些工作：
 
-- 鎷垮埌褰撳墠姝屾洸 ID
-- 璇锋眰姝屾洸璇︽儏
-- 璇锋眰鍘熸枃姝岃瘝鍜岀炕璇戞瓕璇?- 瑙ｆ瀽 LRC
-- 鏍规嵁鎾斁杩涘害鎵惧嚭褰撳墠姝岃瘝琛?- 閫氳繃 native bridge 璋冪敤 `tasklyric.config` 鍜?`tasklyric.update`
+- 获取当前歌曲 ID
+- 请求歌曲详情
+- 请求原文歌词和翻译歌词
+- 解析 LRC
+- 根据播放进度计算当前歌词行
+- 通过 native bridge 调用 `tasklyric.config` 和 `tasklyric.update`
 
-## native bridge 绾﹀畾
+## Native Bridge 约定
 
-JS 灞備細璋冪敤杩欎袱涓柟娉曪細
+JS 层当前会调用两个 native 方法。
 
 ### `tasklyric.config`
 
-鍙傛暟鏄?JSON 瀛楃涓诧紝瀛楁鍖呮嫭锛?
+参数是 JSON 字符串，字段示例：
+
 ```json
 {
   "showTranslation": true,
@@ -46,29 +58,34 @@ JS 灞備細璋冪敤杩欎袱涓柟娉曪細
 
 ### `tasklyric.update`
 
-鍙傛暟鏄?JSON 瀛楃涓诧紝瀛楁鍖呮嫭锛?
+参数是 JSON 字符串，字段示例：
+
 ```json
 {
   "trackId": 123456,
   "title": "Song Name",
   "artist": "Artist",
-  "mainText": "褰撳墠涓绘瓕璇?,
-  "subText": "褰撳墠缈昏瘧姝岃瘝鎴栨瓕鎵嬪悕",
+  "mainText": "当前主歌词",
+  "subText": "当前翻译歌词或歌手名",
   "progressMs": 12345,
   "playbackState": "playing"
 }
 ```
 
-## 涓嬩竴姝ユ渶鍏抽敭鐨?native 瀹炵幇
+## 下一步
 
-浣犺鐨勨€滅湡姝ｅ祵鍏ヤ换鍔℃爮鈥濆繀椤诲湪 native 灞傚畬鎴愩€傛帹鑽愮洿鎺ユ寜杩欐潯璺疄鐜帮細
+你要的“真正嵌入任务栏”必须在 native 层完成。建议按下面的分层实现：
 
-1. DLL 琚?BetterNCM 鍔犺浇
-2. 鍦?DLL 閲屾壘鍒?`Shell_TrayWnd`
-3. 鐢?`CreateWindowEx` 鍒涘缓浠诲姟鏍忓瓙绐楀彛
-4. 閫氳繃 UI Automation 璇嗗埆寮€濮嬫寜閽€佷换鍔″垪琛ㄣ€佺郴缁熸墭鐩橈紝姹傚嚭涓棿鍙敤鍖哄煙
-5. 鐢?Direct2D / DirectWrite 缁樺埗鍙岃姝岃瘝
-6. 鍝嶅簲 `tasklyric.config` 鍜?`tasklyric.update`锛屾洿鏂扮粯鍒跺唴瀹?
-## 璇存槑
+1. DLL 被 BetterNCM 加载
+2. 在 DLL 内找到 `Shell_TrayWnd`
+3. 用 `CreateWindowEx` 创建任务栏子窗口
+4. 用 UI Automation 识别开始按钮、任务列表、系统托盘等区域
+5. 计算可用于歌词显示的任务栏区域
+6. 用 Direct2D / DirectWrite 渲染双行歌词
+7. 响应 `tasklyric.config` 和 `tasklyric.update`
 
-椤跺眰鐩綍鐜版湁閭ｅ Python 瀹炵幇鏄箣鍓嶇殑鐙珛瑕嗙洊绐楀師鍨嬶紱濡傛灉浣犵殑鐩爣宸茬粡纭畾涓?BetterNCM 鍘熺敓璺嚎锛屽彲浠ュ彧鍏虫敞杩欎釜鐩綍銆?
+## 说明
+
+仓库顶层仍然保留了一套 Python 独立原型，但它只是早期验证版本。
+
+如果你的目标已经确定为 BetterNCM 原生方案，可以优先只关注这个目录。
