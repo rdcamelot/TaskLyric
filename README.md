@@ -1,4 +1,4 @@
-# TaskLyric
+﻿# TaskLyric
 
 TaskLyric is a Windows taskbar lyrics project for NetEase Cloud Music PC.
 
@@ -12,19 +12,20 @@ What is already available:
 
 - a buildable host DLL skeleton
 - a native bridge for `tasklyric.config` and `tasklyric.update`
-- a first-pass native taskbar window attached to `Shell_TrayWnd`
-- GDI-based lyric rendering for the current main and secondary lyric lines
-- a runtime script for lyric parsing and lyric state updates
-- local development fixtures and end-to-end replay scripts
+- a native taskbar window attached to `Shell_TrayWnd`
+- DirectComposition / Direct2D / DirectWrite based rendering
+- Win11 taskbar layout probing via UI Automation
+- a live bridge that follows real NetEase playback through SMTC first, with a cloudmusic.exe window fallback when SMTC is unavailable
+- lyric lookup through NetEase public interfaces with main lyric and translated lyric support
+- local development fixtures and replay scripts
 - packaging scripts for local development builds
 
 What is not finished yet:
 
-- NetEase Cloud Music injection and event hooking
-- in-host JavaScript runtime integration
-- taskbar layout probing via UI Automation
-- Direct2D / DirectWrite rendering
-- production-grade installer and automatic update flow
+- in-process NetEase Cloud Music injection
+- direct hooking of NetEase client events and the desktop-lyrics toggle button
+- a production-grade installer and automatic update flow
+- a full settings UI for themes and typography
 
 ## Quick Start
 
@@ -39,6 +40,19 @@ Smoke test the host DLL:
 
 ```powershell
 python scripts\smoke_test_host.py
+```
+
+Run the live bridge for real NetEase playback:
+
+```powershell
+python main.py
+```
+
+Optional live-bridge flags:
+
+```powershell
+python main.py --no-translation
+python main.py --poll-interval 1.0 --tick-ms 120
 ```
 
 Run the development end-to-end replay flow:
@@ -59,14 +73,25 @@ Package local artifacts:
 powershell -ExecutionPolicy Bypass -File installer\package_tasklyric.ps1
 ```
 
+## Live Bridge Notes
+
+The current real-world connection path is:
+
+1. Try reading the current Windows media session via SMTC.
+2. If SMTC is unavailable, fall back to cloudmusic.exe window metadata and the local NetEase playing list.
+3. Prefer NetEase Cloud Music playback metadata.
+4. Resolve the current track through NetEase public interfaces when a direct song ID is not available.
+5. Fetch LRC and translated lyrics.
+6. Push the current lyric line into `tasklyric_host.dll`.
+
+This means TaskLyric can already follow real NetEase playback without the old BetterNCM dependency, but it does not yet hook directly into the NetEase process itself.
+
 ## Development Notes
 
-The current development replay flow does two things:
+The development replay flow does two things:
 
 1. Runs `runtime/tasklyric.runtime.js` against local fixture events and fixture API responses.
 2. Replays the produced transcript into `tasklyric_host.dll` through `ctypes`.
-
-The native window currently uses a simple taskbar child window plus Win32/GDI drawing. This is enough to validate the host-to-native update path before moving on to more fragile work such as NetEase injection, UI Automation-based layout probing, and Direct2D / DirectWrite rendering.
 
 Useful generated files:
 
@@ -75,7 +100,7 @@ Useful generated files:
 - `state/last-native-update.json`
 - `logs/tasklyric-host.log`
 
-A successful replay should also report a native window snapshot similar to:
+A successful replay should report a native window snapshot similar to:
 
 - `hostState.nativeBridge.window.running = true`
 - `hostState.nativeBridge.window.attached = true`
@@ -85,13 +110,13 @@ A successful replay should also report a native window snapshot similar to:
 
 - `host/`: host DLL code and exported API
 - `native/`: native taskbar bridge layer and taskbar window implementation
-- `runtime/`: runtime logic for lyric state and synchronization
+- `runtime/`: runtime logic for lyric parsing and synchronization
 - `fixtures/`: local fixture data for development replay
 - `scripts/`: smoke tests, replay scripts, and helpers
 - `installer/`: local packaging scripts
 - `docs/`: design and architecture notes
 - `betterncm-plugin/`: earlier BetterNCM-based prototype kept for reference
-- `src/netease_taskbar_lyrics/`: earlier standalone overlay prototype kept for reference
+- `src/netease_taskbar_lyrics/`: current live bridge and legacy standalone prototype modules
 
 ## Architecture
 
@@ -108,3 +133,5 @@ This repository does not include account credentials, cookies, or tokens, and it
 ## License
 
 This project is licensed under the [MIT License](LICENSE).
+
+

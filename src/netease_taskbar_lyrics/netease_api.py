@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
 import json
@@ -33,25 +33,52 @@ class TrackCandidate:
     artists: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class LyricBundle:
+    song_id: int
+    title: str
+    artist: str
+    main_timeline: LyricTimeline | None
+    translation_timeline: LyricTimeline | None
+
+
 class NeteaseLyricClient:
     def __init__(self) -> None:
-        self._timeline_cache: dict[tuple[str, str], LyricTimeline | None] = {}
+        self._bundle_cache: dict[tuple[str, str], LyricBundle | None] = {}
         self._lock = Lock()
 
-    def get_timeline(self, title: str, artist: str) -> LyricTimeline | None:
-        cache_key = (_normalize(title), _normalize(artist))
+    def get_bundle(self, title: str, artist: str) -> LyricBundle | None:
+        cache_key = ("track", f"{_normalize(title)}::{_normalize(artist)}")
 
         with self._lock:
-            if cache_key in self._timeline_cache:
-                return self._timeline_cache[cache_key]
+            if cache_key in self._bundle_cache:
+                return self._bundle_cache[cache_key]
 
         candidate = self._search_best_match(title, artist)
-        timeline = self._fetch_timeline(candidate.song_id) if candidate else None
+        bundle = self._fetch_bundle(candidate) if candidate else None
 
         with self._lock:
-            self._timeline_cache[cache_key] = timeline
+            self._bundle_cache[cache_key] = bundle
 
-        return timeline
+        return bundle
+
+    def get_bundle_by_song_id(self, song_id: int, *, title_hint: str = "", artist_hint: str = "") -> LyricBundle | None:
+        if song_id <= 0:
+            return None
+
+        cache_key = ("song_id", str(int(song_id)))
+        with self._lock:
+            if cache_key in self._bundle_cache:
+                return self._bundle_cache[cache_key]
+
+        bundle = self._fetch_bundle_by_song_id(song_id, title_hint=title_hint, artist_hint=artist_hint)
+        with self._lock:
+            self._bundle_cache[cache_key] = bundle
+        return bundle
+
+    def get_timeline(self, title: str, artist: str) -> LyricTimeline | None:
+        bundle = self.get_bundle(title, artist)
+        return bundle.main_timeline if bundle else None
 
     def _search_best_match(self, title: str, artist: str) -> TrackCandidate | None:
         payload = {
@@ -80,12 +107,27 @@ class NeteaseLyricClient:
 
         return None
 
-    def _fetch_timeline(self, song_id: int) -> LyricTimeline | None:
-        query = parse.urlencode({"id": song_id, "lv": 1, "kv": 1, "tv": -1})
+    def _fetch_bundle(self, candidate: TrackCandidate) -> LyricBundle | None:
+        query = parse.urlencode({"id": candidate.song_id, "lv": 1, "kv": 1, "tv": -1})
         url = f"{LYRIC_ENDPOINT}?{query}"
         data = _get_json(url)
-        raw_lrc = data.get("lrc", {}).get("lyric")
-        return LyricTimeline.from_lrc(raw_lrc)
+        return _bundle_from_lyric_payload(
+            data,
+            song_id=candidate.song_id,
+            title_hint=candidate.name,
+            artist_hint=" / ".join(candidate.artists),
+        )
+
+    def _fetch_bundle_by_song_id(self, song_id: int, *, title_hint: str, artist_hint: str) -> LyricBundle | None:
+        query = parse.urlencode({"id": int(song_id), "lv": 1, "kv": 1, "tv": -1})
+        url = f"{LYRIC_ENDPOINT}?{query}"
+        data = _get_json(url)
+        return _bundle_from_lyric_payload(
+            data,
+            song_id=int(song_id),
+            title_hint=title_hint,
+            artist_hint=artist_hint,
+        )
 
     @staticmethod
     def _score_candidate(candidate: TrackCandidate, title: str, artist: str) -> int:
@@ -110,6 +152,29 @@ class NeteaseLyricClient:
             score += 1
 
         return score
+
+
+def _bundle_from_lyric_payload(
+    data: dict[str, Any],
+    *,
+    song_id: int,
+    title_hint: str,
+    artist_hint: str,
+) -> LyricBundle | None:
+    raw_lrc = data.get("lrc", {}).get("lyric")
+    raw_tlrc = data.get("tlyric", {}).get("lyric")
+    main_timeline = LyricTimeline.from_lrc(raw_lrc)
+    translation_timeline = LyricTimeline.from_lrc(raw_tlrc)
+    if not main_timeline and not translation_timeline:
+        return None
+
+    return LyricBundle(
+        song_id=int(song_id),
+        title=title_hint,
+        artist=artist_hint,
+        main_timeline=main_timeline,
+        translation_timeline=translation_timeline,
+    )
 
 
 def _to_candidate(song: dict[str, Any]) -> TrackCandidate:

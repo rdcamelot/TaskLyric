@@ -1,34 +1,45 @@
 ﻿from __future__ import annotations
 
+import argparse
 from dataclasses import dataclass
 import queue
 import threading
 import time
 
+from .host_bridge import HostTaskbarBridge
 from .lrc import LyricTimeline
-from .netease_api import NeteaseLyricClient
-from .overlay import TaskbarLyricWindow
+from .netease_api import LyricBundle, NeteaseLyricClient
 from .smtc import MediaSessionProvider, MediaSessionSnapshot
 
 
-POLL_INTERVAL_SECONDS = 1.2
-TICK_INTERVAL_MS = 150
-REPOSITION_INTERVAL_MS = 1500
-WAITING_TEXT = "\u7b49\u5f85\u7f51\u6613\u4e91\u97f3\u4e50\u5f00\u59cb\u64ad\u653e"
-LOADING_PREFIX = "\u6b63\u5728\u52a0\u8f7d\u6b4c\u8bcd: "
+DEFAULT_POLL_INTERVAL_SECONDS = 1.2
+DEFAULT_TICK_INTERVAL_MS = 150
+WAITING_TEXT = "等待网易云音乐开始播放"
+LOADING_PREFIX = "正在加载歌词"
+STOPPED_SUBTEXT = "TaskLyric"
 
 
 @dataclass(frozen=True)
 class LyricResult:
     track_key: str
-    timeline: LyricTimeline | None
+    bundle: LyricBundle | None
 
 
 class TaskbarLyricsApp:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        show_translation: bool = True,
+        poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS,
+        tick_interval_ms: int = DEFAULT_TICK_INTERVAL_MS,
+    ) -> None:
         self.provider = MediaSessionProvider()
         self.lyric_client = NeteaseLyricClient()
-        self.overlay = TaskbarLyricWindow()
+        self.bridge = HostTaskbarBridge(config={"showTranslation": show_translation})
+
+        self.poll_interval_seconds = max(0.4, float(poll_interval_seconds))
+        self.tick_interval_ms = max(60, int(tick_interval_ms))
+        self.show_translation = show_translation
 
         self._session_queue: queue.Queue[MediaSessionSnapshot | None] = queue.Queue()
         self._lyric_queue: queue.Queue[LyricResult] = queue.Queue()
@@ -37,45 +48,55 @@ class TaskbarLyricsApp:
         self._active_session: MediaSessionSnapshot | None = None
         self._active_track_key = ""
         self._pending_track_key = ""
-        self._timeline: LyricTimeline | None = None
-        self._last_visible_text = ""
-        self._last_reposition_at = 0.0
+        self._main_timeline: LyricTimeline | None = None
+        self._translation_timeline: LyricTimeline | None = None
+        self._resolved_song_id = 0
+        self._last_payload_key: tuple[str, ...] | None = None
 
     def start(self) -> None:
+        self.bridge.start()
+        self.bridge.emit_event(
+            "tasklyric.live.started",
+            {
+                "pollIntervalSeconds": self.poll_interval_seconds,
+                "tickIntervalMs": self.tick_interval_ms,
+                "showTranslation": self.show_translation,
+            },
+        )
+
         thread = threading.Thread(target=self._poll_session_loop, daemon=True)
         thread.start()
-        self.overlay.after(TICK_INTERVAL_MS, self._tick)
-        self.overlay.run()
+
+        try:
+            while not self._stop_event.is_set():
+                self._drain_session_queue()
+                self._drain_lyric_queue()
+                self._refresh_display()
+                self._stop_event.wait(self.tick_interval_ms / 1000)
+        finally:
+            self.stop()
 
     def stop(self) -> None:
+        if self._stop_event.is_set():
+            return
         self._stop_event.set()
-        self.overlay.destroy()
-
-    def _tick(self) -> None:
-        self._drain_session_queue()
-        self._drain_lyric_queue()
-        self._refresh_display()
-
-        now = time.monotonic()
-        if now - self._last_reposition_at >= REPOSITION_INTERVAL_MS / 1000:
-            self.overlay.reposition()
-            self._last_reposition_at = now
-
-        self.overlay.after(TICK_INTERVAL_MS, self._tick)
+        self.bridge.emit_event("tasklyric.live.stopped", {})
+        self.bridge.shutdown()
 
     def _poll_session_loop(self) -> None:
         while not self._stop_event.is_set():
             try:
                 session = self.provider.get_current_session()
-            except Exception:
+            except Exception as exc:
+                self.bridge.emit_event("tasklyric.live.session_error", {"message": str(exc)})
                 session = None
 
             self._session_queue.put(session)
-            self._stop_event.wait(POLL_INTERVAL_SECONDS)
+            self._stop_event.wait(self.poll_interval_seconds)
 
     def _drain_session_queue(self) -> None:
-        has_update = False
         latest_session: MediaSessionSnapshot | None = None
+        has_update = False
         while True:
             try:
                 latest_session = self._session_queue.get_nowait()
@@ -87,10 +108,14 @@ class TaskbarLyricsApp:
             return
 
         if latest_session is None:
+            if self._active_session is not None:
+                self.bridge.emit_event("tasklyric.live.session_cleared", {})
             self._active_session = None
             self._active_track_key = ""
             self._pending_track_key = ""
-            self._timeline = None
+            self._main_timeline = None
+            self._translation_timeline = None
+            self._resolved_song_id = 0
             return
 
         previous_track = self._active_track_key
@@ -98,8 +123,22 @@ class TaskbarLyricsApp:
         self._active_track_key = _track_key(latest_session)
 
         if self._active_track_key != previous_track:
-            self._timeline = None
+            self._main_timeline = None
+            self._translation_timeline = None
+            self._resolved_song_id = 0
             self._pending_track_key = self._active_track_key
+            self._last_payload_key = None
+            self.bridge.emit_event(
+                "audioplayer.onLoad",
+                {
+                    "title": latest_session.title,
+                    "artist": latest_session.artist,
+                    "trackKey": self._active_track_key,
+                    "playbackStatus": latest_session.playback_status,
+                    "detectionSource": latest_session.detection_source,
+                    "songId": latest_session.song_id,
+                },
+            )
             self._start_lyric_fetch(latest_session)
 
     def _drain_lyric_queue(self) -> None:
@@ -112,57 +151,146 @@ class TaskbarLyricsApp:
             if result.track_key != self._active_track_key:
                 continue
 
-            self._timeline = result.timeline
-            if result.track_key == self._pending_track_key:
-                self._pending_track_key = ""
+            self._pending_track_key = ""
+            if result.bundle is None:
+                self._main_timeline = None
+                self._translation_timeline = None
+                self._resolved_song_id = 0
+                continue
+
+            self._main_timeline = result.bundle.main_timeline
+            self._translation_timeline = result.bundle.translation_timeline
+            self._resolved_song_id = result.bundle.song_id
 
     def _start_lyric_fetch(self, session: MediaSessionSnapshot) -> None:
         thread = threading.Thread(
             target=self._fetch_lyrics_worker,
-            args=(self._active_track_key, session.title, session.artist),
+            args=(self._active_track_key, session),
             daemon=True,
         )
         thread.start()
 
-    def _fetch_lyrics_worker(self, track_key: str, title: str, artist: str) -> None:
+    def _fetch_lyrics_worker(self, track_key: str, session: MediaSessionSnapshot) -> None:
         try:
-            timeline = self.lyric_client.get_timeline(title, artist)
-        except Exception:
-            timeline = None
-        self._lyric_queue.put(LyricResult(track_key=track_key, timeline=timeline))
+            bundle = None
+            if session.song_id > 0:
+                bundle = self.lyric_client.get_bundle_by_song_id(
+                    session.song_id,
+                    title_hint=session.title,
+                    artist_hint=session.artist,
+                )
+            if bundle is None:
+                bundle = self.lyric_client.get_bundle(session.title, session.artist)
+        except Exception as exc:
+            self.bridge.emit_event(
+                "tasklyric.live.lyric_error",
+                {"title": session.title, "artist": session.artist, "message": str(exc)},
+            )
+            bundle = None
+        self._lyric_queue.put(LyricResult(track_key=track_key, bundle=bundle))
 
     def _refresh_display(self) -> None:
         if not self._active_session:
-            self._show_text(WAITING_TEXT)
+            self._publish_display(
+                title="",
+                artist="",
+                main_text=WAITING_TEXT,
+                sub_text=STOPPED_SUBTEXT,
+                progress_ms=0,
+                playback_state="stopped",
+                track_id=0,
+            )
             return
 
-        if self._timeline:
-            position_ms = self._active_session.estimated_position_ms()
-            line = self._timeline.line_at(position_ms)
-            if line:
-                self._show_text(line)
-                return
+        session = self._active_session
+        progress_ms = session.estimated_position_ms()
+        playback_state = session.playback_status.lower() or "unknown"
+        artist = session.artist.strip()
+        title = session.title.strip()
 
-        artist_suffix = f" - {self._active_session.artist}" if self._active_session.artist else ""
+        main_text = title or WAITING_TEXT
+        sub_text = artist or STOPPED_SUBTEXT
+
+        if self._main_timeline:
+            current_line = self._main_timeline.line_at(progress_ms)
+            if current_line:
+                main_text = current_line
+
+        if self.show_translation and self._translation_timeline:
+            translated_line = self._translation_timeline.line_at(progress_ms)
+            if translated_line:
+                sub_text = translated_line
+
         if self._pending_track_key:
-            self._show_text(f"{LOADING_PREFIX}{self._active_session.title}{artist_suffix}")
+            main_text = f"{LOADING_PREFIX}: {title}" if title else LOADING_PREFIX
+            sub_text = artist or STOPPED_SUBTEXT
+
+        self._publish_display(
+            title=title,
+            artist=artist,
+            main_text=main_text,
+            sub_text=sub_text,
+            progress_ms=progress_ms,
+            playback_state=playback_state,
+            track_id=self._resolved_song_id or session.song_id,
+        )
+
+    def _publish_display(
+        self,
+        *,
+        title: str,
+        artist: str,
+        main_text: str,
+        sub_text: str,
+        progress_ms: int,
+        playback_state: str,
+        track_id: int,
+    ) -> None:
+        payload_key = (
+            title,
+            artist,
+            main_text,
+            sub_text,
+            str(track_id),
+            str(progress_ms // 200),
+            playback_state,
+        )
+        if payload_key == self._last_payload_key:
             return
 
-        self._show_text(f"{self._active_session.title}{artist_suffix}")
-
-    def _show_text(self, text: str) -> None:
-        if text == self._last_visible_text:
-            return
-        self.overlay.set_text(text)
-        self._last_visible_text = text
+        self._last_payload_key = payload_key
+        self.bridge.update_lyric(
+            title=title,
+            artist=artist,
+            main_text=main_text,
+            sub_text=sub_text,
+            progress_ms=progress_ms,
+            playback_state=playback_state,
+            track_id=track_id,
+        )
 
 
 def _track_key(session: MediaSessionSnapshot) -> str:
-    return f"{session.title.strip().lower()}::{session.artist.strip().lower()}"
+    return (
+        f"{session.source_app_user_model_id.strip().lower()}::"
+        f"{session.song_id}::"
+        f"{session.title.strip().lower()}::"
+        f"{session.artist.strip().lower()}"
+    )
 
 
-def run() -> None:
-    app = TaskbarLyricsApp()
+def run(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Run the TaskLyric live bridge for NetEase Cloud Music.")
+    parser.add_argument("--no-translation", action="store_true", help="Hide translated lyric lines when available.")
+    parser.add_argument("--poll-interval", type=float, default=DEFAULT_POLL_INTERVAL_SECONDS, help="Seconds between playback-source polls.")
+    parser.add_argument("--tick-ms", type=int, default=DEFAULT_TICK_INTERVAL_MS, help="Milliseconds between host updates.")
+    args = parser.parse_args(argv)
+
+    app = TaskbarLyricsApp(
+        show_translation=not args.no_translation,
+        poll_interval_seconds=args.poll_interval,
+        tick_interval_ms=args.tick_ms,
+    )
     try:
         app.start()
     except KeyboardInterrupt:

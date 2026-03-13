@@ -1,4 +1,4 @@
-from pathlib import Path
+﻿from pathlib import Path
 import sys
 
 
@@ -12,3 +12,4 @@ from netease_taskbar_lyrics.app import run
 
 if __name__ == "__main__":
     run()
+

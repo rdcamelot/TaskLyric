@@ -6,9 +6,12 @@ from pathlib import Path
 import subprocess
 import time
 
+from .cloudmusic import CloudMusicWindowProbe
+
 
 SCRIPT_PATH = Path(__file__).resolve().parents[2] / "scripts" / "get_media_sessions.ps1"
 NETEASE_KEYWORDS = ("cloudmusic", "netease")
+WINDOW_FALLBACK_SOURCE = "cloudmusic.window"
 
 
 @dataclass(frozen=True)
@@ -22,6 +25,8 @@ class MediaSessionSnapshot:
     start_time_ms: int
     playback_status: str
     fetched_at: float
+    song_id: int = 0
+    detection_source: str = "smtc"
 
     def estimated_position_ms(self) -> int:
         position = max(self.position_ms, self.start_time_ms)
@@ -33,22 +38,30 @@ class MediaSessionSnapshot:
 
 
 class MediaSessionProvider:
+    def __init__(self) -> None:
+        self._window_probe = CloudMusicWindowProbe()
+        self._fallback_track_key = ""
+        self._fallback_position_ms = 0
+        self._fallback_anchor = time.monotonic()
+
     def get_current_session(self) -> MediaSessionSnapshot | None:
         sessions = self.get_sessions()
-        if not sessions:
-            return None
+        if sessions:
+            netease_sessions = [
+                session
+                for session in sessions
+                if any(keyword in session.source_app_user_model_id.lower() for keyword in NETEASE_KEYWORDS)
+            ]
+            if netease_sessions:
+                sessions = netease_sessions
+            elif len(sessions) != 1:
+                sessions = []
 
-        netease_sessions = [
-            session
-            for session in sessions
-            if any(keyword in session.source_app_user_model_id.lower() for keyword in NETEASE_KEYWORDS)
-        ]
-        if netease_sessions:
-            sessions = netease_sessions
-        elif len(sessions) != 1:
-            return None
+            if sessions:
+                self._reset_fallback_progress()
+                return max(sessions, key=self._session_score)
 
-        return max(sessions, key=self._session_score)
+        return self._get_window_fallback_session()
 
     def get_sessions(self) -> list[MediaSessionSnapshot]:
         try:
@@ -101,10 +114,53 @@ class MediaSessionProvider:
                     start_time_ms=int(item.get("startTimeMs") or 0),
                     playback_status=str(item.get("playbackStatus") or "Unknown"),
                     fetched_at=now,
+                    detection_source="smtc",
                 )
             )
 
         return sessions
+
+    def _get_window_fallback_session(self) -> MediaSessionSnapshot | None:
+        track = self._window_probe.get_current_track()
+        if track is None:
+            self._reset_fallback_progress()
+            return None
+
+        now = time.monotonic()
+        track_key = self._fallback_key(track.title, track.artist, track.song_id)
+        if track_key != self._fallback_track_key:
+            self._fallback_track_key = track_key
+            self._fallback_position_ms = 0
+            self._fallback_anchor = now
+        else:
+            elapsed_ms = max(0, int((now - self._fallback_anchor) * 1000))
+            self._fallback_position_ms += elapsed_ms
+            self._fallback_anchor = now
+            if track.duration_ms > 0:
+                self._fallback_position_ms = min(self._fallback_position_ms, track.duration_ms)
+
+        return MediaSessionSnapshot(
+            source_app_user_model_id=WINDOW_FALLBACK_SOURCE,
+            title=track.title,
+            artist=track.artist,
+            album_title="",
+            position_ms=self._fallback_position_ms,
+            duration_ms=track.duration_ms,
+            start_time_ms=0,
+            playback_status="Playing",
+            fetched_at=now,
+            song_id=track.song_id,
+            detection_source="window",
+        )
+
+    def _reset_fallback_progress(self) -> None:
+        self._fallback_track_key = ""
+        self._fallback_position_ms = 0
+        self._fallback_anchor = time.monotonic()
+
+    @staticmethod
+    def _fallback_key(title: str, artist: str, song_id: int) -> str:
+        return f"{song_id}:{title.strip().lower()}:{artist.strip().lower()}"
 
     @staticmethod
     def _session_score(session: MediaSessionSnapshot) -> tuple[int, int, int]:
@@ -116,5 +172,3 @@ class MediaSessionProvider:
             1 if is_playing else 0,
             len(session.title),
         )
-
-
