@@ -14,12 +14,13 @@ namespace tasklyric::native {
 class TaskbarDCompRenderer;
 
 struct TaskbarConfig {
-    std::wstring font_family = L"Microsoft YaHei UI";
-    int font_size = 17;
+    std::wstring font_family = L"Segoe UI Variable Text";
+    int font_size = 18;
     COLORREF text_color = RGB(248, 250, 252);
     COLORREF sub_text_color = RGB(174, 184, 197);
     COLORREF shadow_color = RGB(5, 7, 11);
-    std::wstring align = L"left";
+    std::wstring theme_mode = L"auto";
+    std::wstring align = L"center";
     bool debug_fill = false;
     COLORREF debug_fill_color = RGB(156, 255, 46);
     COLORREF debug_border_color = RGB(255, 59, 48);
@@ -84,4 +85,7 @@ private:
 };
 
 }  // namespace tasklyric::native
+
+
+
 

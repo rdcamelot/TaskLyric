@@ -3,12 +3,13 @@
 
   var DEFAULT_CONFIG = {
     showTranslation: true,
-    fontFamily: "Microsoft YaHei UI",
-    fontSize: 17,
+    fontFamily: "Segoe UI Variable Text",
+    fontSize: 18,
     color: "#F8FAFC",
     subColor: "#AEB8C5",
     shadowColor: "#05070B",
-    align: "left"
+    themeMode: "auto",
+    align: "center"
   };
 
   var LOADING_TEXT = "\u6b4c\u8bcd\u52a0\u8f7d\u4e2d";
@@ -363,4 +364,7 @@
     globalScope.TaskLyricRuntime = api;
   }
 })(typeof globalThis !== "undefined" ? globalThis : this);
+
+
+
 

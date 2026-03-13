@@ -63,7 +63,93 @@ DWRITE_TEXT_ALIGNMENT to_text_alignment(std::wstring_view align) {
     return DWRITE_TEXT_ALIGNMENT_CENTER;
 }
 
-}  // namespace
+constexpr wchar_t kThemePersonalizeKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize";
+constexpr wchar_t kSystemUsesLightThemeValue[] = L"SystemUsesLightTheme";
+
+struct VisualPalette {
+    D2D1_COLOR_F main_text;
+    D2D1_COLOR_F sub_text;
+    D2D1_COLOR_F shadow;
+    D2D1_COLOR_F glow;
+    D2D1_COLOR_F surface_fill;
+    D2D1_COLOR_F surface_border;
+    D2D1_COLOR_F surface_inner;
+    D2D1_COLOR_F surface_top_highlight;
+    D2D1_COLOR_F surface_bottom_edge;
+};
+
+bool query_registry_dword(const wchar_t* subkey, const wchar_t* value_name, DWORD* out_value) {
+    if (!subkey || !value_name || !out_value) {
+        return false;
+    }
+
+    HKEY key = nullptr;
+    const LONG open_result = RegOpenKeyExW(HKEY_CURRENT_USER, subkey, 0, KEY_QUERY_VALUE, &key);
+    if (open_result != ERROR_SUCCESS) {
+        return false;
+    }
+
+    DWORD type = 0;
+    DWORD size = sizeof(DWORD);
+    DWORD value = 0;
+    const LONG query_result = RegQueryValueExW(key, value_name, nullptr, &type, reinterpret_cast<LPBYTE>(&value), &size);
+    RegCloseKey(key);
+    if (query_result != ERROR_SUCCESS || type != REG_DWORD) {
+        return false;
+    }
+
+    *out_value = value;
+    return true;
+}
+
+bool system_uses_light_theme() {
+    DWORD value = 0;
+    return query_registry_dword(kThemePersonalizeKey, kSystemUsesLightThemeValue, &value) && value != 0;
+}
+
+VisualPalette resolve_palette(const TaskbarConfig& config) {
+    const bool debug_mode = config.debug_fill || config.debug_border_thickness > 0;
+    const bool light_theme = config.theme_mode == L"light" || (config.theme_mode != L"dark" && system_uses_light_theme());
+    if (debug_mode || config.theme_mode == L"manual") {
+        return {
+            to_d2d_color(config.text_color, 0.98f),
+            to_d2d_color(config.sub_text_color, 0.88f),
+            to_d2d_color(config.shadow_color, 0.62f),
+            to_d2d_color(config.shadow_color, 0.22f),
+            D2D1_COLOR_F{0.0f, 0.0f, 0.0f, 0.0f},
+            D2D1_COLOR_F{0.0f, 0.0f, 0.0f, 0.0f},
+            D2D1_COLOR_F{0.0f, 0.0f, 0.0f, 0.0f},
+            D2D1_COLOR_F{0.0f, 0.0f, 0.0f, 0.0f},
+            D2D1_COLOR_F{0.0f, 0.0f, 0.0f, 0.0f},
+        };
+    }
+
+    if (light_theme) {
+        return {
+            D2D1_COLOR_F{0.12f, 0.14f, 0.18f, 0.98f},
+            D2D1_COLOR_F{0.36f, 0.42f, 0.50f, 0.90f},
+            D2D1_COLOR_F{1.0f, 1.0f, 1.0f, 0.34f},
+            D2D1_COLOR_F{1.0f, 1.0f, 1.0f, 0.12f},
+            D2D1_COLOR_F{0.985f, 0.990f, 1.000f, 0.80f},
+            D2D1_COLOR_F{0.84f, 0.87f, 0.92f, 0.78f},
+            D2D1_COLOR_F{1.0f, 1.0f, 1.0f, 0.42f},
+            D2D1_COLOR_F{1.0f, 1.0f, 1.0f, 0.56f},
+            D2D1_COLOR_F{0.79f, 0.83f, 0.89f, 0.58f},
+        };
+    }
+
+    return {
+        D2D1_COLOR_F{0.975f, 0.982f, 0.992f, 0.98f},
+        D2D1_COLOR_F{0.75f, 0.79f, 0.85f, 0.88f},
+        D2D1_COLOR_F{0.03f, 0.04f, 0.06f, 0.64f},
+        D2D1_COLOR_F{0.03f, 0.04f, 0.06f, 0.20f},
+        D2D1_COLOR_F{0.99f, 0.995f, 1.0f, 0.18f},
+        D2D1_COLOR_F{1.0f, 1.0f, 1.0f, 0.24f},
+        D2D1_COLOR_F{1.0f, 1.0f, 1.0f, 0.09f},
+        D2D1_COLOR_F{1.0f, 1.0f, 1.0f, 0.24f},
+        D2D1_COLOR_F{0.04f, 0.05f, 0.08f, 0.34f},
+    };
+}}  // namespace
 
 TaskbarDCompRenderer::~TaskbarDCompRenderer() {
     shutdown();
@@ -286,6 +372,11 @@ bool TaskbarDCompRenderer::render(const TaskbarConfig& config, const TaskbarLyri
     ID2D1SolidColorBrush* sub_brush = nullptr;
     ID2D1SolidColorBrush* shadow_brush = nullptr;
     ID2D1SolidColorBrush* glow_brush = nullptr;
+    ID2D1SolidColorBrush* glass_fill_brush = nullptr;
+    ID2D1SolidColorBrush* glass_border_brush = nullptr;
+    ID2D1SolidColorBrush* glass_inner_brush = nullptr;
+    ID2D1SolidColorBrush* glass_highlight_brush = nullptr;
+    ID2D1SolidColorBrush* glass_bottom_edge_brush = nullptr;
     ID2D1SolidColorBrush* fill_brush = nullptr;
     ID2D1SolidColorBrush* border_brush = nullptr;
     IDWriteInlineObject* trimming_sign = nullptr;
@@ -297,54 +388,36 @@ bool TaskbarDCompRenderer::render(const TaskbarConfig& config, const TaskbarLyri
     const std::wstring sub_text = state.sub_text.empty() ? state.artist : state.sub_text;
     const bool has_sub_text = !sub_text.empty();
     const bool is_paused = state.playback_state == L"paused";
+    const bool debug_mode = config.debug_fill || config.debug_border_thickness > 0;
+    const VisualPalette palette = resolve_palette(config);
     const DWRITE_TEXT_ALIGNMENT alignment = to_text_alignment(config.align);
-    const FLOAT main_font_size = static_cast<FLOAT>(std::clamp(config.font_size, 12, 34));
-    const FLOAT sub_font_size = static_cast<FLOAT>(std::max(11, config.font_size - 5));
+    const FLOAT main_font_size = static_cast<FLOAT>(std::clamp(config.font_size, 13, 36));
+    const FLOAT sub_font_size = static_cast<FLOAT>(std::max(12, config.font_size - 5));
     const float width_f = static_cast<float>(width);
     const float height_f = static_cast<float>(height);
-    const float padding_x = 16.0f;
-    const float padding_y = has_sub_text ? 6.0f : 5.0f;
-    const float main_top = has_sub_text ? (padding_y - 0.5f) : std::max(3.0f, (height_f - (main_font_size + 8.0f)) * 0.5f - 0.5f);
-    const float main_bottom = has_sub_text ? (main_top + main_font_size + 6.0f) : (main_top + main_font_size + 8.0f);
+    const float card_inset_x = debug_mode ? 0.0f : 8.0f;
+    const float card_inset_y = debug_mode ? 0.0f : 7.0f;
+    const float card_radius = debug_mode ? 0.0f : 14.0f;
     const D2D1_MATRIX_3X2_F identity = {1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f};
     const D2D1_COLOR_F transparent = D2D1_COLOR_F{0.0f, 0.0f, 0.0f, 0.0f};
     const D2D1_RECT_F full_rect = {0.0f, 0.0f, width_f, height_f};
-    const D2D1_RECT_F main_rect = {
-        padding_x,
-        main_top,
-        width_f - padding_x,
-        main_bottom,
-    };
-    const D2D1_RECT_F sub_rect = {
-        padding_x,
-        has_sub_text ? (main_bottom - 0.5f) : 0.0f,
-        width_f - padding_x,
-        has_sub_text ? (height_f - padding_y + 1.0f) : 0.0f,
-    };
-    const D2D1_RECT_F main_glow = {
-        main_rect.left,
-        main_rect.top + 2.0f,
-        main_rect.right,
-        main_rect.bottom + 2.0f,
-    };
-    const D2D1_RECT_F main_shadow = {
-        main_rect.left,
-        main_rect.top + 1.0f,
-        main_rect.right,
-        main_rect.bottom + 1.0f,
-    };
-    const D2D1_RECT_F sub_glow = {
-        sub_rect.left,
-        sub_rect.top + 1.5f,
-        sub_rect.right,
-        sub_rect.bottom + 1.5f,
-    };
-    const D2D1_RECT_F sub_shadow = {
-        sub_rect.left,
-        sub_rect.top + 0.75f,
-        sub_rect.right,
-        sub_rect.bottom + 0.75f,
-    };
+    const D2D1_ROUNDED_RECT glass_rect = {{card_inset_x, card_inset_y, width_f - card_inset_x, height_f - card_inset_y}, card_radius, card_radius};
+    const D2D1_ROUNDED_RECT glass_inner = {{glass_rect.rect.left + 1.0f, glass_rect.rect.top + 1.0f, glass_rect.rect.right - 1.0f, glass_rect.rect.bottom - 1.0f}, std::max(0.0f, card_radius - 1.0f), std::max(0.0f, card_radius - 1.0f)};
+    const float text_inset_x = debug_mode ? 16.0f : (glass_rect.rect.left + 14.0f);
+    const float top_anchor = debug_mode ? 5.0f : (glass_rect.rect.top + 4.5f);
+    const float bottom_anchor = debug_mode ? (height_f - 5.0f) : (glass_rect.rect.bottom - 4.5f);
+    const float main_top = has_sub_text ? top_anchor : std::max(top_anchor, ((top_anchor + bottom_anchor - (main_font_size + 8.0f)) * 0.5f) - 0.5f);
+    const float main_bottom = has_sub_text ? (main_top + main_font_size + 5.0f) : (main_top + main_font_size + 8.0f);
+    const D2D1_RECT_F main_rect = {text_inset_x, main_top, width_f - text_inset_x, main_bottom};
+    const D2D1_RECT_F sub_rect = {text_inset_x, has_sub_text ? (main_bottom - 0.25f) : 0.0f, width_f - text_inset_x, has_sub_text ? bottom_anchor : 0.0f};
+    const D2D1_RECT_F main_glow = {main_rect.left, main_rect.top + 1.8f, main_rect.right, main_rect.bottom + 1.8f};
+    const D2D1_RECT_F main_shadow = {main_rect.left, main_rect.top + 0.9f, main_rect.right, main_rect.bottom + 0.9f};
+    const D2D1_RECT_F sub_glow = {sub_rect.left, sub_rect.top + 1.2f, sub_rect.right, sub_rect.bottom + 1.2f};
+    const D2D1_RECT_F sub_shadow = {sub_rect.left, sub_rect.top + 0.7f, sub_rect.right, sub_rect.bottom + 0.7f};
+    const D2D1_POINT_2F top_highlight_start = {glass_rect.rect.left + 14.0f, glass_rect.rect.top + 1.25f};
+    const D2D1_POINT_2F top_highlight_end = {glass_rect.rect.right - 14.0f, glass_rect.rect.top + 1.25f};
+    const D2D1_POINT_2F bottom_edge_start = {glass_rect.rect.left + 13.0f, glass_rect.rect.bottom - 1.15f};
+    const D2D1_POINT_2F bottom_edge_end = {glass_rect.rect.right - 13.0f, glass_rect.rect.bottom - 1.15f};
 
     do {
         hr = dwrite_factory_->CreateTextFormat(
@@ -393,25 +466,52 @@ bool TaskbarDCompRenderer::render(const TaskbarConfig& config, const TaskbarLyri
             sub_format->SetTrimming(&trimming, trimming_sign);
         }
 
-        hr = d2d_context_->CreateSolidColorBrush(to_d2d_color(config.text_color, is_paused ? 0.78f : 0.98f), &main_brush);
+        hr = d2d_context_->CreateSolidColorBrush(palette.main_text, &main_brush);
         if (FAILED(hr)) {
             set_failure(L"CreateSolidColorBrush(main)", hr);
             break;
         }
-        hr = d2d_context_->CreateSolidColorBrush(to_d2d_color(config.sub_text_color, is_paused ? 0.56f : 0.88f), &sub_brush);
+        hr = d2d_context_->CreateSolidColorBrush(palette.sub_text, &sub_brush);
         if (FAILED(hr)) {
             set_failure(L"CreateSolidColorBrush(sub)", hr);
             break;
         }
-        hr = d2d_context_->CreateSolidColorBrush(to_d2d_color(config.shadow_color, 0.62f), &shadow_brush);
+        hr = d2d_context_->CreateSolidColorBrush(palette.shadow, &shadow_brush);
         if (FAILED(hr)) {
             set_failure(L"CreateSolidColorBrush(shadow)", hr);
             break;
         }
-        hr = d2d_context_->CreateSolidColorBrush(to_d2d_color(config.shadow_color, 0.22f), &glow_brush);
+        hr = d2d_context_->CreateSolidColorBrush(palette.glow, &glow_brush);
         if (FAILED(hr)) {
             set_failure(L"CreateSolidColorBrush(glow)", hr);
             break;
+        }
+        if (!debug_mode) {
+            hr = d2d_context_->CreateSolidColorBrush(palette.surface_fill, &glass_fill_brush);
+            if (FAILED(hr)) {
+                set_failure(L"CreateSolidColorBrush(glassFill)", hr);
+                break;
+            }
+            hr = d2d_context_->CreateSolidColorBrush(palette.surface_border, &glass_border_brush);
+            if (FAILED(hr)) {
+                set_failure(L"CreateSolidColorBrush(glassBorder)", hr);
+                break;
+            }
+            hr = d2d_context_->CreateSolidColorBrush(palette.surface_inner, &glass_inner_brush);
+            if (FAILED(hr)) {
+                set_failure(L"CreateSolidColorBrush(glassInner)", hr);
+                break;
+            }
+            hr = d2d_context_->CreateSolidColorBrush(palette.surface_top_highlight, &glass_highlight_brush);
+            if (FAILED(hr)) {
+                set_failure(L"CreateSolidColorBrush(glassHighlight)", hr);
+                break;
+            }
+            hr = d2d_context_->CreateSolidColorBrush(palette.surface_bottom_edge, &glass_bottom_edge_brush);
+            if (FAILED(hr)) {
+                set_failure(L"CreateSolidColorBrush(glassBottomEdge)", hr);
+                break;
+            }
         }
         if (config.debug_fill) {
             hr = d2d_context_->CreateSolidColorBrush(to_d2d_color(config.debug_fill_color, 0.95f), &fill_brush);
@@ -436,6 +536,12 @@ bool TaskbarDCompRenderer::render(const TaskbarConfig& config, const TaskbarLyri
 
         if (fill_brush) {
             d2d_context_->FillRectangle(&full_rect, fill_brush);
+        } else if (glass_fill_brush) {
+            d2d_context_->FillRoundedRectangle(&glass_rect, glass_fill_brush);
+            d2d_context_->DrawRoundedRectangle(&glass_rect, glass_border_brush, 1.0f, nullptr);
+            d2d_context_->DrawRoundedRectangle(&glass_inner, glass_inner_brush, 1.0f, nullptr);
+            d2d_context_->DrawLine(top_highlight_start, top_highlight_end, glass_highlight_brush, 1.0f, nullptr);
+            d2d_context_->DrawLine(bottom_edge_start, bottom_edge_end, glass_bottom_edge_brush, 1.0f, nullptr);
         }
 
         if (!main_text.empty()) {
@@ -508,7 +614,7 @@ bool TaskbarDCompRenderer::render(const TaskbarConfig& config, const TaskbarLyri
             break;
         }
 
-        hr = swap_chain_->Present(1, 0);
+        hr = swap_chain_->Present(is_paused ? 2 : 1, 0);
         if (FAILED(hr)) {
             set_failure(L"IDXGISwapChain1::Present", hr);
             break;
@@ -526,6 +632,11 @@ bool TaskbarDCompRenderer::render(const TaskbarConfig& config, const TaskbarLyri
     safe_release(trimming_sign);
     safe_release(border_brush);
     safe_release(fill_brush);
+    safe_release(glass_bottom_edge_brush);
+    safe_release(glass_highlight_brush);
+    safe_release(glass_inner_brush);
+    safe_release(glass_border_brush);
+    safe_release(glass_fill_brush);
     safe_release(glow_brush);
     safe_release(shadow_brush);
     safe_release(sub_brush);
@@ -629,6 +740,12 @@ void TaskbarDCompRenderer::set_failure(const wchar_t* stage, HRESULT hr) {
 }
 
 }  // namespace tasklyric::native
+
+
+
+
+
+
 
 
 

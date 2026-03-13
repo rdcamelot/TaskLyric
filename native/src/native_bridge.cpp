@@ -218,13 +218,19 @@ TaskbarConfig parse_config_payload(std::wstring_view payload_json) {
         config.font_family = *value;
     }
     if (const auto value = extract_json_int(payload_json, L"fontSize")) {
-        config.font_size = std::clamp(*value, 10, 32);
+        config.font_size = std::clamp(*value, 10, 36);
     }
     if (const auto value = extract_json_string(payload_json, L"color")) {
         config.text_color = parse_hex_color(*value, config.text_color);
     }
+    if (const auto value = extract_json_string(payload_json, L"subColor")) {
+        config.sub_text_color = parse_hex_color(*value, config.sub_text_color);
+    }
     if (const auto value = extract_json_string(payload_json, L"shadowColor")) {
         config.shadow_color = parse_hex_color(*value, config.shadow_color);
+    }
+    if (const auto value = extract_json_string(payload_json, L"themeMode")) {
+        config.theme_mode = *value;
     }
     if (const auto value = extract_json_string(payload_json, L"align")) {
         config.align = *value;
@@ -243,7 +249,6 @@ TaskbarConfig parse_config_payload(std::wstring_view payload_json) {
     }
     return config;
 }
-
 TaskbarLyricState parse_update_payload(std::wstring_view payload_json) {
     TaskbarLyricState state;
     if (const auto value = extract_json_string(payload_json, L"title")) {
@@ -348,4 +353,7 @@ std::wstring TaskbarBridge::snapshot_json() const {
 }
 
 }  // namespace tasklyric::native
+
+
+
 

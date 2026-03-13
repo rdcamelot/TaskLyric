@@ -49,7 +49,9 @@ def main() -> int:
 
     rc = dll.tasklyric_initialize(str(ROOT))
     print(f"initialize={rc}")
-    print(f"config={dll.tasklyric_call_native('tasklyric.config', '{\"fontSize\":16}')}")
+    print(
+        f"config={dll.tasklyric_call_native('tasklyric.config', '{\"fontSize\":18,\"align\":\"center\",\"themeMode\":\"auto\"}') }"
+    )
     print(f"update={dll.tasklyric_call_native('tasklyric.update', '{\"mainText\":\"hello\"}')}")
     print(dll.tasklyric_get_state_json())
     print(f"shutdown={dll.tasklyric_shutdown()}")
