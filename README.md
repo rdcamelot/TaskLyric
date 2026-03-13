@@ -1,128 +1,110 @@
-﻿# TaskLyric
+# TaskLyric
 
-`TaskLyric` 是一个面向网易云音乐 PC 端的任务栏歌词项目，目标是把歌词真正嵌入 Windows 任务栏，而不是用透明悬浮窗覆盖。
+TaskLyric is a Windows taskbar lyrics project for NetEase Cloud Music PC.
 
-## 为什么不再直接依赖 BetterNCM / chromatic
+The goal is to render synchronized lyrics into the taskbar area in a native way, instead of using a floating overlay window.
 
-当前决定改成 `TaskLyric` 自带宿主，而不是要求用户额外安装 BetterNCM 或 chromatic。原因是：
+## Status
 
-- `TaskLyric` 的最终目标不是“做一个插件”，而是“交付一个可直接使用的网易云任务栏歌词产品”
-- 如果继续依赖外部宿主，用户安装链路会变长，问题定位也会更分散
-- 你需要的核心能力其实很集中：播放事件、配置存取、native bridge、任务栏绘制
-- 为了这几个能力去引入整个通用插件框架，依赖面偏大，也不利于后续只针对网易云做兼容
+This project is in active development.
 
-所以当前路线是：
+What is already available:
 
-- 借鉴 BetterNCM / chromatic 过去的注入思路和事件模型
-- 借鉴 `Taskbar-Lyrics` 的任务栏歌词渲染思路
-- 但由 `TaskLyric` 自己提供最小宿主，只服务这个项目本身
+- a buildable host DLL skeleton
+- a native bridge for `tasklyric.config` and `tasklyric.update`
+- a first-pass native taskbar window attached to `Shell_TrayWnd`
+- GDI-based lyric rendering for the current main and secondary lyric lines
+- a runtime script for lyric parsing and lyric state updates
+- local development fixtures and end-to-end replay scripts
+- packaging scripts for local development builds
 
-## 当前仓库结构
+What is not finished yet:
 
-- `host/`
-  自带宿主 DLL。负责初始化、事件接入、配置文件落盘、native bridge 调用和状态导出。
+- NetEase Cloud Music injection and event hooking
+- in-host JavaScript runtime integration
+- taskbar layout probing via UI Automation
+- Direct2D / DirectWrite rendering
+- production-grade installer and automatic update flow
 
-- `native/`
-  任务栏原生层。目前先实现了一个可编译的 bridge 骨架，用来接收 `tasklyric.config` 和 `tasklyric.update`。
+## Quick Start
 
-- `runtime/`
-  未来由宿主加载的 JS 运行时代码。这里放歌词同步、LRC 解析、配置更新等逻辑，不再假设 BetterNCM 存在。
-
-- `fixtures/`
-  开发期联调用的本地事件和接口响应样例。
-
-- `installer/`
-  目前只做打包，不直接写入网易云安装目录。
-
-- `betterncm-plugin/`
-  早期的 BetterNCM 方向原型，保留作参考，不再是主路线。
-
-- `main.py` 和 `src/netease_taskbar_lyrics/`
-  更早期的独立覆盖窗原型，也只保留作参考。
-
-## 当前实现状态
-
-已经落下来的部分：
-
-- `host` DLL 可编译骨架
-- `host` 导出接口：
-  `tasklyric_initialize`
-  `tasklyric_shutdown`
-  `tasklyric_emit_event`
-  `tasklyric_call_native`
-  `tasklyric_get_state_json`
-  `tasklyric_get_runtime_script_path`
-- `native` bridge 骨架，可接收 `tasklyric.config` / `tasklyric.update`
-- 通用 `runtime/tasklyric.runtime.js`
-- 打包脚本 `installer/package_tasklyric.ps1`
-- 本地宿主验证脚本 `scripts/smoke_test_host.py`
-- 开发期 runtime transcript 运行链：
-  `scripts/run_runtime_dev.mjs`
-  `scripts/run_runtime_dev.py`
-
-还没完成的关键部分：
-
-- 注入网易云并挂接事件
-- 真正的 JS 引擎承载
-- 任务栏子窗口挂接到 `Shell_TrayWnd`
-- UI Automation 定位任务栏可用区域
-- Direct2D / DirectWrite 渲染歌词
-
-## 现在怎么测试
-
-当前可以测试的是“宿主骨架能否构建、runtime 是否能跑、native bridge 是否能收到更新、打包链路是否正常”，还不能测试最终的任务栏歌词效果。
-
-### 构建
+Build:
 
 ```powershell
 cmake -S . -B build -G "MinGW Makefiles"
 cmake --build build
 ```
 
-### 本地 Smoke Test
+Smoke test the host DLL:
 
 ```powershell
 python scripts\smoke_test_host.py
 ```
 
-这个脚本会加载 `tasklyric_host.dll`，调用初始化和两个 bridge 方法，再把当前状态 JSON 打印出来。
-
-### 开发期端到端联调
+Run the development end-to-end replay flow:
 
 ```powershell
 python scripts\run_runtime_dev.py
 ```
 
-这条命令会执行两步：
+Run the visual replay flow and keep the native window on screen for inspection:
 
-1. 用 `Node` 运行 `runtime/tasklyric.runtime.js`，读取 `fixtures/` 里的模拟事件和接口响应，生成 runtime transcript
-2. 用 `Python + ctypes` 加载 `tasklyric_host.dll`，把 transcript 里的事件和 native 调用回放进宿主
+```powershell
+python scripts\run_runtime_dev.py --step-delay-ms 500 --hold-seconds 8
+```
 
-运行完成后可以检查：
+Package local artifacts:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File installer\package_tasklyric.ps1
+```
+
+## Development Notes
+
+The current development replay flow does two things:
+
+1. Runs `runtime/tasklyric.runtime.js` against local fixture events and fixture API responses.
+2. Replays the produced transcript into `tasklyric_host.dll` through `ctypes`.
+
+The native window currently uses a simple taskbar child window plus Win32/GDI drawing. This is enough to validate the host-to-native update path before moving on to more fragile work such as NetEase injection, UI Automation-based layout probing, and Direct2D / DirectWrite rendering.
+
+Useful generated files:
 
 - `state/runtime-dev-transcript.json`
 - `state/last-event.json`
 - `state/last-native-update.json`
 - `logs/tasklyric-host.log`
 
-### 打包
+A successful replay should also report a native window snapshot similar to:
 
-```powershell
-powershell -ExecutionPolicy Bypass -File installer\package_tasklyric.ps1
-```
+- `hostState.nativeBridge.window.running = true`
+- `hostState.nativeBridge.window.attached = true`
+- `hostState.nativeBridge.window.hasHwnd = true`
 
-### 现阶段测试重点
+## Repository Layout
 
-- `build/host/tasklyric_host.dll` 能否生成
-- `runtime/tasklyric.runtime.js` 是否能正确产出歌词更新
-- `tasklyric_get_state_json` 是否能反映最后一次回放状态
-- 打包结果是否落到 `dist/TaskLyric/`
+- `host/`: host DLL code and exported API
+- `native/`: native taskbar bridge layer and taskbar window implementation
+- `runtime/`: runtime logic for lyric state and synchronization
+- `fixtures/`: local fixture data for development replay
+- `scripts/`: smoke tests, replay scripts, and helpers
+- `installer/`: local packaging scripts
+- `docs/`: design and architecture notes
+- `betterncm-plugin/`: earlier BetterNCM-based prototype kept for reference
+- `src/netease_taskbar_lyrics/`: earlier standalone overlay prototype kept for reference
 
-## 下一步
+## Architecture
 
-后续实现顺序会按这个方向推进：
+Design decisions and the rationale for the current self-hosted direction are documented in [docs/architecture.md](docs/architecture.md).
 
-1. 给 `host` 增加最小事件总线和运行时装载入口
-2. 实现网易云注入 / 挂钩链路
-3. 把 `runtime` 真正跑进宿主承载环境
-4. 实现原生任务栏窗口与文本渲染
+## Disclaimer
+
+This project is for technical research and learning purposes only.
+
+Data is obtained from publicly accessible network interfaces. This project is not affiliated with or endorsed by any official service provider. Any consequences arising from use of this project are the sole responsibility of the user.
+
+This repository does not include account credentials, cookies, or tokens, and it does not encourage bypassing official restrictions.
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).

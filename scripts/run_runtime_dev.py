@@ -1,11 +1,13 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
+import argparse
 import ctypes
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -67,29 +69,53 @@ def run_runtime_transcript() -> dict:
     return transcript
 
 
-def replay_into_host(dll, transcript: dict) -> dict:
+def replay_into_host(dll, transcript: dict, step_delay_ms: int = 0, hold_seconds: float = 0.0) -> dict:
     init_rc = dll.tasklyric_initialize(str(ROOT))
     if init_rc != 0:
         raise RuntimeError(f"tasklyric_initialize failed: {init_rc}")
 
+    step_delay = max(0, step_delay_ms) / 1000.0
+
     for entry in transcript.get("logs", []):
         dll.tasklyric_emit_event("runtime.log", json.dumps(entry, ensure_ascii=False))
+        if step_delay:
+            time.sleep(step_delay)
 
     for event in transcript.get("events", []):
         dll.tasklyric_emit_event(event["name"], json.dumps(event["payload"], ensure_ascii=False))
+        if step_delay:
+            time.sleep(step_delay)
 
     for call in transcript.get("nativeCalls", []):
         dll.tasklyric_call_native(call["method"], json.dumps(call["payload"], ensure_ascii=False))
+        if step_delay:
+            time.sleep(step_delay)
+
+    if hold_seconds > 0:
+        time.sleep(hold_seconds)
 
     host_state = json.loads(dll.tasklyric_get_state_json())
     dll.tasklyric_shutdown()
     return host_state
 
 
-def main() -> int:
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Replay the TaskLyric runtime transcript into the host DLL.")
+    parser.add_argument("--step-delay-ms", type=int, default=0, help="Delay between replayed events and native calls.")
+    parser.add_argument("--hold-seconds", type=float, default=0.0, help="Keep the native window visible before shutdown.")
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv if argv is not None else sys.argv[1:])
     transcript = run_runtime_transcript()
     dll = load_dll()
-    host_state = replay_into_host(dll, transcript)
+    host_state = replay_into_host(
+        dll,
+        transcript,
+        step_delay_ms=args.step_delay_ms,
+        hold_seconds=args.hold_seconds,
+    )
 
     summary = {
         "runtimeState": transcript.get("runtimeState"),
@@ -98,6 +124,8 @@ def main() -> int:
         "eventCount": len(transcript.get("events", [])),
         "nativeCallCount": len(transcript.get("nativeCalls", [])),
         "transcriptPath": str(TRANSCRIPT_PATH),
+        "stepDelayMs": args.step_delay_ms,
+        "holdSeconds": args.hold_seconds,
     }
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0

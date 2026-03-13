@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import ctypes
 import os
@@ -40,6 +40,8 @@ def main() -> int:
 
     dll.tasklyric_initialize.argtypes = [ctypes.c_wchar_p]
     dll.tasklyric_initialize.restype = ctypes.c_int
+    dll.tasklyric_shutdown.argtypes = []
+    dll.tasklyric_shutdown.restype = ctypes.c_int
     dll.tasklyric_call_native.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p]
     dll.tasklyric_call_native.restype = ctypes.c_int
     dll.tasklyric_get_state_json.argtypes = []
@@ -50,6 +52,7 @@ def main() -> int:
     print(f"config={dll.tasklyric_call_native('tasklyric.config', '{\"fontSize\":16}')}")
     print(f"update={dll.tasklyric_call_native('tasklyric.update', '{\"mainText\":\"hello\"}')}")
     print(dll.tasklyric_get_state_json())
+    print(f"shutdown={dll.tasklyric_shutdown()}")
     return 0
 
 

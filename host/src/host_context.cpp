@@ -137,6 +137,11 @@ int HostContext::initialize(std::wstring_view base_dir) {
         return 12;
     }
 
+    const int bridge_result = TaskbarBridge::instance().initialize();
+    if (bridge_result != 0) {
+        return 13;
+    }
+
     initialized_ = true;
     log_line(L"TaskLyric host initialized");
     rebuild_state_json();
@@ -150,6 +155,7 @@ void HostContext::shutdown() {
     }
 
     log_line(L"TaskLyric host shutdown");
+    TaskbarBridge::instance().shutdown();
     initialized_ = false;
     rebuild_state_json();
 }
