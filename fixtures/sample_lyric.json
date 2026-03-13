@@ -1,0 +1,8 @@
+﻿{
+  "lrc": {
+    "lyric": "[00:00.00]TaskLyric Demo\n[00:04.00]The first line\n[00:08.00]The second line\n[00:12.00]The third line"
+  },
+  "tlyric": {
+    "lyric": "[00:04.00]Demo translation one\n[00:08.00]Demo translation two\n[00:12.00]Demo translation three"
+  }
+}

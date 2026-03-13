@@ -1,0 +1,38 @@
+﻿[
+  {
+    "name": "audioplayer.onLoad",
+    "payload": {
+      "id": 123456
+    }
+  },
+  {
+    "name": "audioplayer.onPlayState",
+    "payload": {
+      "state": "playing"
+    }
+  },
+  {
+    "name": "audioplayer.onPlayProgress",
+    "payload": {
+      "progress": 1000
+    }
+  },
+  {
+    "name": "audioplayer.onPlayProgress",
+    "payload": {
+      "progress": 5000
+    }
+  },
+  {
+    "name": "audioplayer.onPlayProgress",
+    "payload": {
+      "progress": 9000
+    }
+  },
+  {
+    "name": "audioplayer.onPlayProgress",
+    "payload": {
+      "progress": 13000
+    }
+  }
+]

@@ -1,4 +1,4 @@
-# TaskLyric
+﻿# TaskLyric
 
 `TaskLyric` 是一个面向网易云音乐 PC 端的任务栏歌词项目，目标是把歌词真正嵌入 Windows 任务栏，而不是用透明悬浮窗覆盖。
 
@@ -28,6 +28,9 @@
 - `runtime/`
   未来由宿主加载的 JS 运行时代码。这里放歌词同步、LRC 解析、配置更新等逻辑，不再假设 BetterNCM 存在。
 
+- `fixtures/`
+  开发期联调用的本地事件和接口响应样例。
+
 - `installer/`
   目前只做打包，不直接写入网易云安装目录。
 
@@ -52,7 +55,10 @@
 - `native` bridge 骨架，可接收 `tasklyric.config` / `tasklyric.update`
 - 通用 `runtime/tasklyric.runtime.js`
 - 打包脚本 `installer/package_tasklyric.ps1`
-- 本地验证脚本 `scripts/smoke_test_host.py`
+- 本地宿主验证脚本 `scripts/smoke_test_host.py`
+- 开发期 runtime transcript 运行链：
+  `scripts/run_runtime_dev.mjs`
+  `scripts/run_runtime_dev.py`
 
 还没完成的关键部分：
 
@@ -64,7 +70,7 @@
 
 ## 现在怎么测试
 
-当前可以测试的是“宿主骨架能否构建、导出是否存在、打包链路是否正常”，还不能测试最终的任务栏歌词效果。
+当前可以测试的是“宿主骨架能否构建、runtime 是否能跑、native bridge 是否能收到更新、打包链路是否正常”，还不能测试最终的任务栏歌词效果。
 
 ### 构建
 
@@ -81,6 +87,24 @@ python scripts\smoke_test_host.py
 
 这个脚本会加载 `tasklyric_host.dll`，调用初始化和两个 bridge 方法，再把当前状态 JSON 打印出来。
 
+### 开发期端到端联调
+
+```powershell
+python scripts\run_runtime_dev.py
+```
+
+这条命令会执行两步：
+
+1. 用 `Node` 运行 `runtime/tasklyric.runtime.js`，读取 `fixtures/` 里的模拟事件和接口响应，生成 runtime transcript
+2. 用 `Python + ctypes` 加载 `tasklyric_host.dll`，把 transcript 里的事件和 native 调用回放进宿主
+
+运行完成后可以检查：
+
+- `state/runtime-dev-transcript.json`
+- `state/last-event.json`
+- `state/last-native-update.json`
+- `logs/tasklyric-host.log`
+
 ### 打包
 
 ```powershell
@@ -90,8 +114,8 @@ powershell -ExecutionPolicy Bypass -File installer\package_tasklyric.ps1
 ### 现阶段测试重点
 
 - `build/host/tasklyric_host.dll` 能否生成
-- `tasklyric_get_state_json` 是否能返回初始化状态
-- `runtime/tasklyric.runtime.js` 是否可被后续宿主加载
+- `runtime/tasklyric.runtime.js` 是否能正确产出歌词更新
+- `tasklyric_get_state_json` 是否能反映最后一次回放状态
 - 打包结果是否落到 `dist/TaskLyric/`
 
 ## 下一步
@@ -100,5 +124,5 @@ powershell -ExecutionPolicy Bypass -File installer\package_tasklyric.ps1
 
 1. 给 `host` 增加最小事件总线和运行时装载入口
 2. 实现网易云注入 / 挂钩链路
-3. 把 `runtime` 真正跑起来
+3. 把 `runtime` 真正跑进宿主承载环境
 4. 实现原生任务栏窗口与文本渲染

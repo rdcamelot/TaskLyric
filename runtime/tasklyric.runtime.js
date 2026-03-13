@@ -1,4 +1,4 @@
-(function (globalScope) {
+﻿(function (globalScope) {
   "use strict";
 
   var DEFAULT_CONFIG = {
@@ -9,6 +9,9 @@
     shadowColor: "#14161A",
     align: "center"
   };
+
+  var LOADING_TEXT = "\u6b4c\u8bcd\u52a0\u8f7d\u4e2d";
+  var EMPTY_TEXT = "\u6682\u65e0\u6b4c\u8bcd";
 
   function createRuntime(hostApi) {
     var state = {
@@ -97,7 +100,7 @@
           trackId: state.trackId,
           title: state.title,
           artist: state.artist,
-          mainText: state.title || "歌词加载中",
+          mainText: state.title || LOADING_TEXT,
           subText: state.artist,
           progressMs: 0,
           playbackState: state.playbackState
@@ -132,7 +135,7 @@
         return;
       }
 
-      var mainText = lineAt(state.mainTimeline, state.lastProgressMs) || state.title || "暂无歌词";
+      var mainText = lineAt(state.mainTimeline, state.lastProgressMs) || state.title || EMPTY_TEXT;
       var translated = state.config.showTranslation ? lineAt(state.subTimeline, state.lastProgressMs) : "";
       var subText = translated || state.artist || "";
       var dedupeKey = [
@@ -240,6 +243,7 @@
 
     for (var i = 0; i < rows.length; i += 1) {
       var row = rows[i];
+      pattern.lastIndex = 0;
       var matches = Array.from(row.matchAll(pattern));
       if (!matches.length) {
         continue;
