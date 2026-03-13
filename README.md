@@ -15,7 +15,8 @@ What is already available:
 - a native taskbar window attached to `Shell_TrayWnd`
 - DirectComposition / Direct2D / DirectWrite based rendering
 - Win11 taskbar layout probing via UI Automation
-- a live bridge that follows real NetEase playback through SMTC first, with a cloudmusic.exe window fallback when SMTC is unavailable
+- a live bridge that follows real NetEase playback through a .NET SMTC helper first, then PowerShell SMTC, with a cloudmusic.exe window fallback when media sessions are unavailable
+- native taskbar transport controls for previous, play or pause, and next
 - lyric lookup through NetEase public interfaces with main lyric and translated lyric support
 - local development fixtures and replay scripts
 - packaging scripts for local development builds
@@ -29,11 +30,17 @@ What is not finished yet:
 
 ## Quick Start
 
-Build:
+Build the native host:
 
 ```powershell
 cmake -S . -B build -G "MinGW Makefiles"
 cmake --build build
+```
+
+Build the Windows media-session helper:
+
+```powershell
+dotnet build tools\TaskLyric.MediaSessionHelper\TaskLyric.MediaSessionHelper.csproj
 ```
 
 Smoke test the host DLL:
@@ -77,12 +84,13 @@ powershell -ExecutionPolicy Bypass -File installer\package_tasklyric.ps1
 
 The current real-world connection path is:
 
-1. Try reading the current Windows media session via SMTC.
-2. If SMTC is unavailable, fall back to cloudmusic.exe window metadata and the local NetEase playing list.
-3. Prefer NetEase Cloud Music playback metadata.
+1. Try reading the current Windows media session through `tools/TaskLyric.MediaSessionHelper`, which uses `Windows.Media.Control` for playback state, timeline, and media commands.
+2. If that path does not surface a usable NetEase session, fall back to the older PowerShell SMTC probe.
+3. If media sessions are still unavailable, fall back to cloudmusic.exe window metadata and the local NetEase playing list.
 4. Resolve the current track through NetEase public interfaces when a direct song ID is not available.
 5. Fetch LRC and translated lyrics.
 6. Push the current lyric line into `tasklyric_host.dll`.
+7. Taskbar buttons send previous, play or pause, and next commands back through the host bridge.
 
 This means TaskLyric can already follow real NetEase playback without the old BetterNCM dependency, but it does not yet hook directly into the NetEase process itself.
 
@@ -113,6 +121,7 @@ A successful replay should report a native window snapshot similar to:
 - `runtime/`: runtime logic for lyric parsing and synchronization
 - `fixtures/`: local fixture data for development replay
 - `scripts/`: smoke tests, replay scripts, and helpers
+- `tools/`: auxiliary helper projects, including the Windows media-session bridge
 - `installer/`: local packaging scripts
 - `docs/`: design and architecture notes
 - `betterncm-plugin/`: earlier BetterNCM-based prototype kept for reference

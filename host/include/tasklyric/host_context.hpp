@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <filesystem>
 #include <mutex>
@@ -19,6 +19,7 @@ public:
 
     const wchar_t* state_json();
     const wchar_t* runtime_script_path();
+    const wchar_t* take_pending_command_json();
 
 private:
     HostContext() = default;
@@ -41,6 +42,7 @@ private:
     std::filesystem::path last_native_update_path_;
     std::wstring last_event_name_;
     std::wstring last_event_payload_;
+    std::wstring pending_command_cache_;
     std::wstring state_json_cache_;
 };
 

@@ -1,0 +1,2 @@
+(this.webpackJsonp=this.webpackJsonp||[]).push([[124],{2804:function(t,c,e){"use strict";e.r(c)},2880:function(t,c,e){"use strict";e.r(c);var n=e(3),s=e(1);c.default=t=>{const{name:c}=t;return Object(s.jsx)("div",{className:"wrapper_wcohtma",_nk:"".concat("ALuN","11"),children:Object(s.jsx)(n.N.Text,{className:"text",_nk:"".concat("ALuN","21"),children:c})})},e(2804)}}]);
+//# sourceMappingURL=124.chunk.3c26437.js.map

@@ -1,0 +1,4 @@
+{"top":{"corner_start":100, "corner_end":100, "offset_left":-80,  "offset_right":80, "offset_top":-80, "offset_bottom":80},
+"bottom":{"corner_start":100, "corner_end":100, "offset_left":-80,  "offset_right":80, "offset_top":-80, "offset_bottom":80},
+"left":{"corner_start":0, "corner_end":0, "offset_left":-80,  "offset_right":80, "offset_top":80, "offset_bottom":-80},
+"right":{"corner_start":0, "corner_end":0, "offset_left":-80,  "offset_right":80, "offset_top":80, "offset_bottom":-80}}

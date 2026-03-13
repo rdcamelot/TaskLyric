@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import time
 
 
 IGNORED_WINDOW_TITLES = {"", "桌面歌词", "迷你播放器", "网易云音乐"}
@@ -30,8 +31,39 @@ user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintyp
 user32.GetWindowThreadProcessId.restype = wintypes.DWORD
 user32.IsWindowVisible.argtypes = [wintypes.HWND]
 user32.IsWindowVisible.restype = wintypes.BOOL
+user32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+user32.SendMessageW.restype = ctypes.c_ssize_t
+user32.keybd_event.argtypes = [wintypes.BYTE, wintypes.BYTE, wintypes.DWORD, ctypes.c_size_t]
+user32.keybd_event.restype = None
 
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+WM_APPCOMMAND = 0x0319
+KEYEVENTF_KEYUP = 0x0002
+VK_MEDIA_NEXT_TRACK = 0xB0
+VK_MEDIA_PREV_TRACK = 0xB1
+VK_MEDIA_PLAY_PAUSE = 0xB3
+APPCOMMAND_MEDIA_NEXTTRACK = 11
+APPCOMMAND_MEDIA_PREVIOUSTRACK = 12
+APPCOMMAND_MEDIA_PLAY_PAUSE = 14
+APPCOMMAND_MEDIA_PLAY = 46
+APPCOMMAND_MEDIA_PAUSE = 47
+
+ACTION_TO_APPCOMMAND = {
+    "next": APPCOMMAND_MEDIA_NEXTTRACK,
+    "previous": APPCOMMAND_MEDIA_PREVIOUSTRACK,
+    "toggle-play-pause": APPCOMMAND_MEDIA_PLAY_PAUSE,
+    "play": APPCOMMAND_MEDIA_PLAY,
+    "pause": APPCOMMAND_MEDIA_PAUSE,
+}
+
+ACTION_TO_MEDIA_KEY = {
+    "next": VK_MEDIA_NEXT_TRACK,
+    "previous": VK_MEDIA_PREV_TRACK,
+    "toggle-play-pause": VK_MEDIA_PLAY_PAUSE,
+    "play": VK_MEDIA_PLAY_PAUSE,
+    "pause": VK_MEDIA_PLAY_PAUSE,
+}
+
 kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
 kernel32.OpenProcess.restype = wintypes.HANDLE
 kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
@@ -101,6 +133,40 @@ class CloudMusicWindowProbe:
             source_window_title=candidate.title,
         )
 
+    def matches_current_track(self, title: str, artist: str) -> bool:
+        track = self.get_current_track()
+        if track is None:
+            return False
+
+        expected_title = _normalize(title)
+        expected_artist = _normalize(artist)
+        track_title = _normalize(track.title)
+        track_artist = _normalize(track.artist)
+        if not expected_title or track_title != expected_title:
+            return False
+        if expected_artist and track_artist and track_artist != expected_artist:
+            return expected_artist in track_artist or track_artist in expected_artist
+        return True
+
+    def send_media_command(self, action: str) -> bool:
+        normalized = action.strip().lower()
+        app_command = ACTION_TO_APPCOMMAND.get(normalized)
+        target_window = self._pick_control_window(self._enumerate_cloudmusic_windows())
+
+        if app_command is not None and target_window is not None:
+            lparam = app_command << 16
+            user32.SendMessageW(target_window.hwnd, WM_APPCOMMAND, target_window.hwnd, lparam)
+            return True
+
+        media_key = ACTION_TO_MEDIA_KEY.get(normalized)
+        if media_key is None:
+            return False
+
+        user32.keybd_event(media_key, 0, 0, 0)
+        time.sleep(0.02)
+        user32.keybd_event(media_key, 0, KEYEVENTF_KEYUP, 0)
+        return True
+
     def _enumerate_cloudmusic_windows(self) -> list[_WindowInfo]:
         rows: list[_WindowInfo] = []
         exe_cache: dict[int, str] = {}
@@ -159,6 +225,15 @@ class CloudMusicWindowProbe:
             return None
         scored.sort(key=lambda item: item[0], reverse=True)
         return scored[0][1]
+
+    @staticmethod
+    def _pick_control_window(windows: list[_WindowInfo]) -> _WindowInfo | None:
+        visible_windows = [window for window in windows if window.visible]
+        for class_name in ("OrpheusBrowserHost", "MiniPlayer", "icon"):
+            for window in visible_windows:
+                if window.class_name == class_name:
+                    return window
+        return CloudMusicWindowProbe._pick_title_window(windows)
 
     def _match_playing_list(self, title: str, artist: str) -> _PlaylistTrack | None:
         tracks = self._load_playing_list()

@@ -1,10 +1,11 @@
-#pragma once
+﻿#pragma once
 
 #include <windows.h>
 
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <thread>
 
 #include "tasklyric/taskbar_locator.hpp"
@@ -36,6 +37,29 @@ struct TaskbarLyricState {
     int progress_ms = 0;
 };
 
+enum class TaskbarControlAction {
+    none = 0,
+    previous,
+    toggle_playback,
+    next_track,
+};
+
+struct TaskbarWindowUiState {
+    TaskbarControlAction hot_action = TaskbarControlAction::none;
+    TaskbarControlAction pressed_action = TaskbarControlAction::none;
+};
+
+struct TaskbarControlLayout {
+    bool visible = false;
+    RECT previous_rect{};
+    RECT toggle_rect{};
+    RECT next_rect{};
+    RECT text_rect{};
+};
+
+TaskbarControlLayout compute_taskbar_control_layout(UINT width, UINT height);
+std::wstring_view taskbar_control_action_name(TaskbarControlAction action);
+
 class TaskbarWindow {
 public:
     static TaskbarWindow& instance();
@@ -50,6 +74,7 @@ public:
     void update_config(const TaskbarConfig& config);
     void update_lyric(const TaskbarLyricState& state);
     std::wstring snapshot_json() const;
+    std::wstring take_pending_command_json();
 
 private:
     static LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam);
@@ -61,6 +86,11 @@ private:
     void refresh_window();
     bool render_with_composition_locked();
     void paint_locked(HDC hdc);
+    TaskbarControlAction hit_test_control_locked(POINT point) const;
+    void set_hot_action_locked(TaskbarControlAction action);
+    void set_pressed_action_locked(TaskbarControlAction action);
+    void queue_control_locked(TaskbarControlAction action);
+    void track_mouse_leave();
     std::wstring snapshot_json_locked() const;
 
     mutable std::mutex mutex_;
@@ -73,10 +103,13 @@ private:
     bool attached_ = false;
     bool composition_ready_ = false;
     bool composition_attempted_ = false;
+    bool tracking_mouse_leave_ = false;
     UINT window_width_ = 0;
     UINT window_height_ = 0;
     TaskbarConfig config_{};
     TaskbarLyricState lyric_state_{};
+    TaskbarWindowUiState ui_state_{};
+    std::wstring pending_command_json_;
     TaskbarLayout last_layout_{};
     HFONT main_font_ = nullptr;
     HFONT sub_font_ = nullptr;
@@ -85,7 +118,3 @@ private:
 };
 
 }  // namespace tasklyric::native
-
-
-
-

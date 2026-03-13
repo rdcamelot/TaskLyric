@@ -86,6 +86,18 @@ class HostTaskbarBridge:
         raw = json.dumps(payload, ensure_ascii=False)
         return int(self._dll.tasklyric_call_native(method, raw))
 
+    def take_pending_command(self) -> dict[str, Any] | None:
+        if not self._started:
+            return None
+        raw = self._dll.tasklyric_take_pending_command_json()
+        if not raw:
+            return None
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        return payload if isinstance(payload, dict) else None
+
     def state(self) -> dict[str, Any]:
         if not self._started:
             return {}
@@ -108,6 +120,8 @@ class HostTaskbarBridge:
         self._dll.tasklyric_call_native.restype = ctypes.c_int
         self._dll.tasklyric_get_state_json.argtypes = []
         self._dll.tasklyric_get_state_json.restype = ctypes.c_wchar_p
+        self._dll.tasklyric_take_pending_command_json.argtypes = []
+        self._dll.tasklyric_take_pending_command_json.restype = ctypes.c_wchar_p
 
     @staticmethod
     def _add_mingw_runtime_dir() -> None:
@@ -128,4 +142,3 @@ class HostTaskbarBridge:
         runtime_dir = Path(lines[0]).resolve().parent
         if hasattr(os, "add_dll_directory"):
             os.add_dll_directory(str(runtime_dir))
-

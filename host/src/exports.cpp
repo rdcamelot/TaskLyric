@@ -1,4 +1,4 @@
-#include "tasklyric/host_context.hpp"
+﻿#include "tasklyric/host_context.hpp"
 #include "tasklyric/host_exports.hpp"
 
 namespace {
@@ -41,5 +41,10 @@ const wchar_t* tasklyric_get_state_json() {
 
 const wchar_t* tasklyric_get_runtime_script_path() {
     const wchar_t* value = tasklyric::host::HostContext::instance().runtime_script_path();
+    return value ? value : kEmptyWideString;
+}
+
+const wchar_t* tasklyric_take_pending_command_json() {
+    const wchar_t* value = tasklyric::host::HostContext::instance().take_pending_command_json();
     return value ? value : kEmptyWideString;
 }

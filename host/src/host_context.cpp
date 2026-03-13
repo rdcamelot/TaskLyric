@@ -1,4 +1,4 @@
-#include "tasklyric/host_context.hpp"
+﻿#include "tasklyric/host_context.hpp"
 
 #include "tasklyric/native_bridge.hpp"
 
@@ -202,6 +202,16 @@ const wchar_t* HostContext::runtime_script_path() {
     std::scoped_lock lock(mutex_);
     state_json_cache_ = runtime_script_path_.wstring();
     return state_json_cache_.c_str();
+}
+
+const wchar_t* HostContext::take_pending_command_json() {
+    std::scoped_lock lock(mutex_);
+    pending_command_cache_ = TaskbarBridge::instance().take_pending_command_json();
+    if (!pending_command_cache_.empty()) {
+        log_line(L"control: " + pending_command_cache_);
+        rebuild_state_json();
+    }
+    return pending_command_cache_.c_str();
 }
 
 std::filesystem::path HostContext::resolve_base_dir(std::wstring_view base_dir) const {

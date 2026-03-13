@@ -1,7 +1,7 @@
 ﻿from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import queue
 import threading
 import time
@@ -71,6 +71,7 @@ class TaskbarLyricsApp:
             while not self._stop_event.is_set():
                 self._drain_session_queue()
                 self._drain_lyric_queue()
+                self._drain_control_queue()
                 self._refresh_display()
                 self._stop_event.wait(self.tick_interval_ms / 1000)
         finally:
@@ -80,6 +81,7 @@ class TaskbarLyricsApp:
         if self._stop_event.is_set():
             return
         self._stop_event.set()
+        self.provider.shutdown()
         self.bridge.emit_event("tasklyric.live.stopped", {})
         self.bridge.shutdown()
 
@@ -161,6 +163,59 @@ class TaskbarLyricsApp:
             self._main_timeline = result.bundle.main_timeline
             self._translation_timeline = result.bundle.translation_timeline
             self._resolved_song_id = result.bundle.song_id
+
+    def _drain_control_queue(self) -> None:
+        while True:
+            payload = self.bridge.take_pending_command()
+            if not payload:
+                return
+
+            action = str(payload.get("action") or "").strip().lower()
+            if not action:
+                continue
+
+            ok = False
+            try:
+                ok = self.provider.control(action)
+            except Exception as exc:
+                self.bridge.emit_event(
+                    "tasklyric.live.control_error",
+                    {"action": action, "message": str(exc)},
+                )
+                continue
+
+            self.bridge.emit_event(
+                "tasklyric.live.control",
+                {
+                    "action": action,
+                    "ok": ok,
+                    "source": str(payload.get("source") or "taskbar"),
+                },
+            )
+            if ok:
+                self._apply_control_hint(action)
+
+    def _apply_control_hint(self, action: str) -> None:
+        session = self._active_session
+        if session is None:
+            return
+
+        progress_ms = session.estimated_position_ms()
+        now = time.monotonic()
+        if action == "pause":
+            self._active_session = replace(session, playback_status="Paused", position_ms=progress_ms, fetched_at=now)
+            self._last_payload_key = None
+            return
+        if action == "play":
+            self._active_session = replace(session, playback_status="Playing", position_ms=progress_ms, fetched_at=now)
+            self._last_payload_key = None
+            return
+        if action in {"next", "previous"}:
+            self._pending_track_key = self._active_track_key
+            self._main_timeline = None
+            self._translation_timeline = None
+            self._resolved_song_id = 0
+            self._last_payload_key = None
 
     def _start_lyric_fetch(self, session: MediaSessionSnapshot) -> None:
         thread = threading.Thread(

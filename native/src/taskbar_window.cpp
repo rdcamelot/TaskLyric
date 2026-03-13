@@ -1,8 +1,9 @@
-#include "tasklyric/taskbar_window.hpp"
+﻿#include "tasklyric/taskbar_window.hpp"
 
 #include "tasklyric/taskbar_dcomp_renderer.hpp"
 
 #include <windows.h>
+#include <windowsx.h>
 
 #include <algorithm>
 #include <array>
@@ -24,6 +25,11 @@ constexpr int kFallbackHeight = 48;
 constexpr int kPaddingX = 12;
 constexpr int kPaddingY = 6;
 constexpr int kAnchorGap = 6;
+constexpr int kControlButtonSize = 22;
+constexpr int kControlButtonGap = 6;
+constexpr int kControlRightInset = 16;
+constexpr int kControlMinWidth = 360;
+constexpr int kControlTextGap = 12;
 
 void append_debug_line(const wchar_t* line) {
     const std::filesystem::path path = std::filesystem::current_path() / "logs" / "tasklyric-window.log";
@@ -145,6 +151,45 @@ std::wstring rect_json(const RECT& rect) {
 
 }  // namespace
 
+TaskbarControlLayout compute_taskbar_control_layout(UINT width, UINT height) {
+    TaskbarControlLayout layout{};
+    layout.text_rect = {0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
+
+    const int width_i = static_cast<int>(width);
+    const int height_i = static_cast<int>(height);
+    if (width_i < kControlMinWidth || height_i < 34) {
+        return layout;
+    }
+
+    const int total_width = (kControlButtonSize * 3) + (kControlButtonGap * 2);
+    const int group_right = width_i - kControlRightInset;
+    const int group_left = group_right - total_width;
+    if (group_left <= 160) {
+        return layout;
+    }
+
+    const int top = std::max(6, (height_i - kControlButtonSize) / 2);
+    layout.visible = true;
+    layout.previous_rect = {group_left, top, group_left + kControlButtonSize, top + kControlButtonSize};
+    layout.toggle_rect = {layout.previous_rect.right + kControlButtonGap, top, layout.previous_rect.right + kControlButtonGap + kControlButtonSize, top + kControlButtonSize};
+    layout.next_rect = {layout.toggle_rect.right + kControlButtonGap, top, layout.toggle_rect.right + kControlButtonGap + kControlButtonSize, top + kControlButtonSize};
+    layout.text_rect = {0, 0, layout.previous_rect.left - kControlTextGap, height_i};
+    return layout;
+}
+
+std::wstring_view taskbar_control_action_name(TaskbarControlAction action) {
+    switch (action) {
+    case TaskbarControlAction::previous:
+        return L"previous";
+    case TaskbarControlAction::toggle_playback:
+        return L"toggle-play-pause";
+    case TaskbarControlAction::next_track:
+        return L"next";
+    default:
+        return L"";
+    }
+}
+
 TaskbarWindow::~TaskbarWindow() = default;
 
 TaskbarWindow& TaskbarWindow::instance() {
@@ -240,6 +285,13 @@ std::wstring TaskbarWindow::snapshot_json() const {
     return snapshot_json_locked();
 }
 
+std::wstring TaskbarWindow::take_pending_command_json() {
+    std::scoped_lock lock(mutex_);
+    std::wstring value = pending_command_json_;
+    pending_command_json_.clear();
+    return value;
+}
+
 LRESULT CALLBACK TaskbarWindow::window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
     TaskbarWindow* self = reinterpret_cast<TaskbarWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
 
@@ -255,12 +307,82 @@ LRESULT CALLBACK TaskbarWindow::window_proc(HWND hwnd, UINT message, WPARAM wpar
     }
 
     switch (message) {
-    case WM_NCHITTEST:
-        return HTTRANSPARENT;
+    case WM_NCHITTEST: {
+        POINT point = { GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam) };
+        ScreenToClient(hwnd, &point);
+        std::scoped_lock lock(self->mutex_);
+        return self->hit_test_control_locked(point) == TaskbarControlAction::none ? HTTRANSPARENT : HTCLIENT;
+    }
+    case WM_SETCURSOR: {
+        if (LOWORD(lparam) != HTCLIENT) {
+            return DefWindowProcW(hwnd, message, wparam, lparam);
+        }
+        POINT point{};
+        GetCursorPos(&point);
+        ScreenToClient(hwnd, &point);
+        std::scoped_lock lock(self->mutex_);
+        const auto action = self->hit_test_control_locked(point);
+        SetCursor(LoadCursorW(nullptr, action == TaskbarControlAction::none ? IDC_ARROW : IDC_HAND));
+        return TRUE;
+    }
     case WM_MOUSEACTIVATE:
         return MA_NOACTIVATE;
     case WM_ERASEBKGND:
         return 1;
+    case WM_MOUSEMOVE: {
+        POINT point = { GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam) };
+        std::scoped_lock lock(self->mutex_);
+        self->set_hot_action_locked(self->hit_test_control_locked(point));
+        self->track_mouse_leave();
+        return 0;
+    }
+    case WM_MOUSELEAVE: {
+        std::scoped_lock lock(self->mutex_);
+        self->tracking_mouse_leave_ = false;
+        self->set_hot_action_locked(TaskbarControlAction::none);
+        return 0;
+    }
+    case WM_LBUTTONDOWN: {
+        POINT point = { GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam) };
+        TaskbarControlAction action = TaskbarControlAction::none;
+        {
+            std::scoped_lock lock(self->mutex_);
+            action = self->hit_test_control_locked(point);
+            self->set_pressed_action_locked(action);
+        }
+        if (action != TaskbarControlAction::none) {
+            SetCapture(hwnd);
+            return 0;
+        }
+        break;
+    }
+    case WM_LBUTTONUP: {
+        POINT point = { GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam) };
+        TaskbarControlAction action = TaskbarControlAction::none;
+        bool should_queue = false;
+        {
+            std::scoped_lock lock(self->mutex_);
+            action = self->hit_test_control_locked(point);
+            const auto pressed = self->ui_state_.pressed_action;
+            self->set_pressed_action_locked(TaskbarControlAction::none);
+            self->set_hot_action_locked(action);
+            should_queue = pressed != TaskbarControlAction::none && pressed == action;
+        }
+        if (GetCapture() == hwnd) {
+            ReleaseCapture();
+        }
+        if (should_queue) {
+            std::scoped_lock lock(self->mutex_);
+            self->queue_control_locked(action);
+            return 0;
+        }
+        break;
+    }
+    case WM_CAPTURECHANGED: {
+        std::scoped_lock lock(self->mutex_);
+        self->set_pressed_action_locked(TaskbarControlAction::none);
+        return 0;
+    }
     case WM_SIZE: {
         std::scoped_lock lock(self->mutex_);
         self->window_width_ = static_cast<UINT>(LOWORD(lparam));
@@ -295,6 +417,8 @@ LRESULT CALLBACK TaskbarWindow::window_proc(HWND hwnd, UINT message, WPARAM wpar
     default:
         return DefWindowProcW(hwnd, message, wparam, lparam);
     }
+
+    return DefWindowProcW(hwnd, message, wparam, lparam);
 }
 
 void TaskbarWindow::thread_main() {
@@ -343,6 +467,9 @@ void TaskbarWindow::thread_main() {
         composition_attempted_ = false;
         window_width_ = kPreferredWidth;
         window_height_ = kFallbackHeight;
+        ui_state_ = {};
+        pending_command_json_.clear();
+        tracking_mouse_leave_ = false;
         last_layout_ = {};
         if (attached_) {
             locator_.initialize(parent_hwnd_);
@@ -387,6 +514,9 @@ void TaskbarWindow::thread_main() {
         running_ = false;
         window_width_ = 0;
         window_height_ = 0;
+        ui_state_ = {};
+        pending_command_json_.clear();
+        tracking_mouse_leave_ = false;
         last_layout_ = {};
     }
 
@@ -618,7 +748,7 @@ bool TaskbarWindow::render_with_composition_locked() {
         return false;
     }
 
-    return renderer_->render(config_, lyric_state_, window_width_, window_height_);
+    return renderer_->render(config_, lyric_state_, ui_state_, window_width_, window_height_);
 }
 
 void TaskbarWindow::paint_locked(HDC hdc) {
@@ -681,6 +811,78 @@ void TaskbarWindow::paint_locked(HDC hdc) {
         SelectObject(hdc, old_brush);
         SelectObject(hdc, old_pen);
         DeleteObject(pen);
+    }
+}
+
+TaskbarControlAction TaskbarWindow::hit_test_control_locked(POINT point) const {
+    const TaskbarControlLayout layout = compute_taskbar_control_layout(window_width_, window_height_);
+    if (!layout.visible) {
+        return TaskbarControlAction::none;
+    }
+    if (PtInRect(&layout.previous_rect, point)) {
+        return TaskbarControlAction::previous;
+    }
+    if (PtInRect(&layout.toggle_rect, point)) {
+        return TaskbarControlAction::toggle_playback;
+    }
+    if (PtInRect(&layout.next_rect, point)) {
+        return TaskbarControlAction::next_track;
+    }
+    return TaskbarControlAction::none;
+}
+
+void TaskbarWindow::set_hot_action_locked(TaskbarControlAction action) {
+    if (ui_state_.hot_action == action) {
+        return;
+    }
+    ui_state_.hot_action = action;
+    if (hwnd_) {
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        PostMessageW(hwnd_, kRefreshMessage, 0, 0);
+    }
+}
+
+void TaskbarWindow::set_pressed_action_locked(TaskbarControlAction action) {
+    if (ui_state_.pressed_action == action) {
+        return;
+    }
+    ui_state_.pressed_action = action;
+    if (hwnd_) {
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        PostMessageW(hwnd_, kRefreshMessage, 0, 0);
+    }
+}
+
+void TaskbarWindow::queue_control_locked(TaskbarControlAction action) {
+    std::wstring_view command = taskbar_control_action_name(action);
+    if (command.empty()) {
+        return;
+    }
+
+    if (action == TaskbarControlAction::toggle_playback) {
+        if (_wcsicmp(lyric_state_.playback_state.c_str(), L"playing") == 0) {
+            command = L"pause";
+        } else if (_wcsicmp(lyric_state_.playback_state.c_str(), L"paused") == 0) {
+            command = L"play";
+        }
+    }
+
+    pending_command_json_ = std::wstring(L"{\"action\":\"") + std::wstring(command) + L"\",\"source\":\"taskbar-control\"}";
+    if (hwnd_) {
+        PostMessageW(hwnd_, kRefreshMessage, 0, 0);
+    }
+}
+
+void TaskbarWindow::track_mouse_leave() {
+    if (!hwnd_ || tracking_mouse_leave_) {
+        return;
+    }
+    TRACKMOUSEEVENT event{};
+    event.cbSize = sizeof(event);
+    event.dwFlags = TME_LEAVE;
+    event.hwndTrack = hwnd_;
+    if (TrackMouseEvent(&event)) {
+        tracking_mouse_leave_ = true;
     }
 }
 

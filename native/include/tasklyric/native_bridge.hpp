@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <mutex>
 #include <string>
@@ -14,6 +14,7 @@ public:
     void shutdown();
     int dispatch(std::wstring_view method, std::wstring_view payload_json);
     std::wstring snapshot_json() const;
+    std::wstring take_pending_command_json();
 
 private:
     TaskbarBridge() = default;

@@ -1,0 +1,10 @@
+<!doctype html>
+<html>
+  <head>
+    <title>网易云音乐</title>
+    <meta charset="utf-8"/>
+  </head>
+  <body>
+  </body>
+  <script>!function(){localStorage.getItem("isLocalStorageInherited");(async()=>{const e="inheritLocalStorageToCefForOsx";return new Promise((o,t)=>{setTimeout(()=>{t(!1)},3e3),window.ncmChannelOSX.postMessage({method:"registerCall",command:"winhelper.onGetWKWebWindowLocalStorage",seq:e}),window.MNBCallback=(a,n)=>{try{const t=n[0];if(a!==e||!t.success)return;const r=JSON.parse(t.data);for(const e of Object.entries(r))localStorage.setItem(e[0],e[1]);localStorage.setItem("isLocalStorageInherited","true"),window.MNBCallback=void 0,o(!0)}catch(e){t(!1)}},window.ncmChannelOSX.postMessage({method:"call",command:"winhelper.getWKWebWindowLocalStorage",seq:-1})})})().finally(()=>{location.href="orpheus://orpheus/app.html"})}()</script>
+</html>

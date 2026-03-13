@@ -1,4 +1,4 @@
-#include "tasklyric/native_bridge.hpp"
+﻿#include "tasklyric/native_bridge.hpp"
 
 #include "tasklyric/taskbar_window.hpp"
 
@@ -249,6 +249,7 @@ TaskbarConfig parse_config_payload(std::wstring_view payload_json) {
     }
     return config;
 }
+
 TaskbarLyricState parse_update_payload(std::wstring_view payload_json) {
     TaskbarLyricState state;
     if (const auto value = extract_json_string(payload_json, L"title")) {
@@ -337,6 +338,10 @@ int TaskbarBridge::dispatch(std::wstring_view method, std::wstring_view payload_
     return 0;
 }
 
+std::wstring TaskbarBridge::take_pending_command_json() {
+    return TaskbarWindow::instance().take_pending_command_json();
+}
+
 std::wstring TaskbarBridge::snapshot_json() const {
     std::scoped_lock lock(mutex_);
     std::wostringstream stream;
@@ -353,7 +358,3 @@ std::wstring TaskbarBridge::snapshot_json() const {
 }
 
 }  // namespace tasklyric::native
-
-
-
-
