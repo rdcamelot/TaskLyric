@@ -1,0 +1,12 @@
+﻿{
+  "manifest_version": 1,
+  "name": "TaskLyric",
+  "slug": "tasklyric",
+  "author": "Codex",
+  "version": "0.1.0",
+  "description": "BetterNCM plugin scaffold for native taskbar lyrics.",
+  "injects": {
+    "Main": "main.js"
+  }
+}
+
