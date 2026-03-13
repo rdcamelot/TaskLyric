@@ -1,6 +1,8 @@
 add_library(tasklyric_native STATIC
   src/native_bridge.cpp
   src/taskbar_window.cpp
+  src/taskbar_dcomp_renderer.cpp
+  src/taskbar_locator.cpp
 )
 
 target_include_directories(tasklyric_native
@@ -10,7 +12,14 @@ target_include_directories(tasklyric_native
 
 target_link_libraries(tasklyric_native
   PRIVATE
+    d2d1
+    d3d11
+    dcomp
+    dwrite
+    dxgi
     gdi32
+    ole32
+    oleaut32
     user32
 )
 

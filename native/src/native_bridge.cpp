@@ -172,6 +172,27 @@ std::optional<int> extract_json_int(std::wstring_view input, std::wstring_view k
     return std::stoi(std::wstring(input.substr(value_pos, end - value_pos)));
 }
 
+std::optional<bool> extract_json_bool(std::wstring_view input, std::wstring_view key) {
+    const std::wstring pattern = L"\"" + std::wstring(key) + L"\"";
+    size_t key_pos = input.find(pattern);
+    if (key_pos == std::wstring_view::npos) {
+        return std::nullopt;
+    }
+
+    size_t value_pos = input.find(L':', key_pos + pattern.size());
+    if (value_pos == std::wstring_view::npos) {
+        return std::nullopt;
+    }
+    value_pos = skip_whitespace(input, value_pos + 1);
+    if (input.substr(value_pos, 4) == L"true") {
+        return true;
+    }
+    if (input.substr(value_pos, 5) == L"false") {
+        return false;
+    }
+    return std::nullopt;
+}
+
 COLORREF parse_hex_color(std::wstring_view input, COLORREF fallback) {
     if (input.size() != 7 || input[0] != L'#') {
         return fallback;
@@ -207,6 +228,18 @@ TaskbarConfig parse_config_payload(std::wstring_view payload_json) {
     }
     if (const auto value = extract_json_string(payload_json, L"align")) {
         config.align = *value;
+    }
+    if (const auto value = extract_json_bool(payload_json, L"debugFill")) {
+        config.debug_fill = *value;
+    }
+    if (const auto value = extract_json_string(payload_json, L"debugFillColor")) {
+        config.debug_fill_color = parse_hex_color(*value, config.debug_fill_color);
+    }
+    if (const auto value = extract_json_string(payload_json, L"debugBorderColor")) {
+        config.debug_border_color = parse_hex_color(*value, config.debug_border_color);
+    }
+    if (const auto value = extract_json_int(payload_json, L"debugBorderThickness")) {
+        config.debug_border_thickness = std::clamp(*value, 0, 8);
     }
     return config;
 }

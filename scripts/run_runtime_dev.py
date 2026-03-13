@@ -64,8 +64,37 @@ def run_runtime_transcript() -> dict:
         check=True,
     )
     transcript = json.loads(completed.stdout)
-    TRANSCRIPT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    TRANSCRIPT_PATH.write_text(json.dumps(transcript, ensure_ascii=False, indent=2), encoding="utf-8")
+    return transcript
+
+
+def apply_debug_visual(transcript: dict) -> dict:
+    debug_patch = {
+        "align": "left",
+        "fontSize": 20,
+        "color": "#111111",
+        "shadowColor": "#111111",
+        "debugFill": True,
+        "debugFillColor": "#9CFF2E",
+        "debugBorderColor": "#FF3B30",
+        "debugBorderThickness": 3,
+    }
+
+    native_calls = transcript.get("nativeCalls", [])
+    for call in native_calls:
+        if call.get("method") == "tasklyric.config":
+            payload = dict(call.get("payload") or {})
+            payload.update(debug_patch)
+            call["payload"] = payload
+            break
+    else:
+        native_calls.insert(0, {"method": "tasklyric.config", "payload": debug_patch})
+
+    runtime_state = transcript.get("runtimeState")
+    if isinstance(runtime_state, dict):
+        config = dict(runtime_state.get("config") or {})
+        config.update(debug_patch)
+        runtime_state["config"] = config
+
     return transcript
 
 
@@ -103,12 +132,19 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Replay the TaskLyric runtime transcript into the host DLL.")
     parser.add_argument("--step-delay-ms", type=int, default=0, help="Delay between replayed events and native calls.")
     parser.add_argument("--hold-seconds", type=float, default=0.0, help="Keep the native window visible before shutdown.")
+    parser.add_argument("--debug-visual", action="store_true", help="Use a bright debug style so the taskbar window is easy to spot.")
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv if argv is not None else sys.argv[1:])
     transcript = run_runtime_transcript()
+    if args.debug_visual:
+        transcript = apply_debug_visual(transcript)
+
+    TRANSCRIPT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    TRANSCRIPT_PATH.write_text(json.dumps(transcript, ensure_ascii=False, indent=2), encoding="utf-8")
+
     dll = load_dll()
     host_state = replay_into_host(
         dll,
@@ -126,6 +162,7 @@ def main(argv: list[str] | None = None) -> int:
         "transcriptPath": str(TRANSCRIPT_PATH),
         "stepDelayMs": args.step_delay_ms,
         "holdSeconds": args.hold_seconds,
+        "debugVisual": args.debug_visual,
     }
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0
