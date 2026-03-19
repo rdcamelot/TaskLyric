@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass
 import json
@@ -8,6 +8,7 @@ import threading
 import time
 
 from .cloudmusic import CloudMusicWindowProbe
+from .cloudmusic_remote import CloudMusicRemoteBridge, REMOTE_DEBUG_SOURCE
 
 
 SCRIPT_PATH = Path(__file__).resolve().parents[2] / "scripts" / "get_media_sessions.ps1"
@@ -188,17 +189,24 @@ class _DotNetMediaSessionWatcher:
 
 
 class MediaSessionProvider:
-    def __init__(self) -> None:
+    def __init__(self, *, remote_debug_port: int | None = 9222) -> None:
         self._window_probe = CloudMusicWindowProbe()
+        self._remote = CloudMusicRemoteBridge(port=remote_debug_port)
         self._helper = _DotNetMediaSessionWatcher()
         self._fallback_track_key = ""
         self._fallback_position_ms = 0
         self._fallback_anchor = time.monotonic()
 
     def shutdown(self) -> None:
+        self._remote.shutdown()
         self._helper.shutdown()
 
     def get_current_session(self) -> MediaSessionSnapshot | None:
+        remote_session = self._get_remote_session()
+        if remote_session is not None:
+            self._reset_fallback_progress()
+            return remote_session
+
         helper_session = self._helper.get_current_session()
         if helper_session and self._looks_like_netease_session(helper_session):
             self._reset_fallback_progress()
@@ -226,6 +234,8 @@ class MediaSessionProvider:
         normalized = action.strip().lower()
         if not normalized:
             return False
+        if self._remote.send_control(normalized):
+            return True
         if self._helper.send_control(normalized):
             return True
         return self._window_probe.send_media_command(normalized)
@@ -287,6 +297,39 @@ class MediaSessionProvider:
             )
 
         return sessions
+
+    def _get_remote_session(self) -> MediaSessionSnapshot | None:
+        remote_state = self._remote.get_state()
+        if remote_state is None:
+            return None
+
+        track = None
+        if remote_state.song_id > 0:
+            track = self._window_probe.get_track_by_song_id(remote_state.song_id)
+        if track is None:
+            track = self._window_probe.get_current_track()
+        if track is None:
+            return None
+
+        return MediaSessionSnapshot(
+            source_app_user_model_id=REMOTE_DEBUG_SOURCE,
+            title=track.title,
+            artist=track.artist,
+            album_title="",
+            position_ms=max(0, int(remote_state.position_ms)),
+            duration_ms=max(0, int(track.duration_ms)),
+            start_time_ms=0,
+            playback_status=remote_state.playback_status or "Unknown",
+            fetched_at=remote_state.fetched_at or time.monotonic(),
+            song_id=remote_state.song_id or track.song_id,
+            detection_source=REMOTE_DEBUG_SOURCE,
+            can_pause=True,
+            can_play=True,
+            can_go_next=True,
+            can_go_previous=True,
+            can_seek=bool(remote_state.play_id),
+            can_toggle_play_pause=True,
+        )
 
     def _looks_like_netease_session(self, session: MediaSessionSnapshot) -> bool:
         source = session.source_app_user_model_id.lower()

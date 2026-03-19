@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("TaskLyric.MediaSessionHelper")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+0a5afc504af1fa99459d2152f9700b9bf4503a86")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+bc26bc042faac9b1374287f6825fc26fd3f3b8e6")]
 [assembly: System.Reflection.AssemblyProductAttribute("TaskLyric.MediaSessionHelper")]
 [assembly: System.Reflection.AssemblyTitleAttribute("TaskLyric.MediaSessionHelper")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

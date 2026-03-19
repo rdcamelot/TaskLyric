@@ -25,8 +25,9 @@ constexpr int kFallbackHeight = 48;
 constexpr int kPaddingX = 12;
 constexpr int kPaddingY = 6;
 constexpr int kAnchorGap = 6;
-constexpr int kControlButtonSize = 22;
-constexpr int kControlButtonGap = 6;
+constexpr int kControlButtonSize = 24;
+constexpr int kControlButtonGap = 5;
+constexpr int kControlHitPadding = 5;
 constexpr int kControlRightInset = 16;
 constexpr int kControlMinWidth = 360;
 constexpr int kControlTextGap = 12;
@@ -437,7 +438,7 @@ void TaskbarWindow::thread_main() {
     HWND parent = FindWindowW(L"Shell_TrayWnd", nullptr);
     const DWORD style = parent ? (WS_CHILD | WS_VISIBLE) : (WS_POPUP | WS_VISIBLE | WS_DISABLED);
     const DWORD ex_style = parent
-        ? (WS_EX_NOPARENTNOTIFY | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_NOREDIRECTIONBITMAP)
+        ? (WS_EX_NOPARENTNOTIFY | WS_EX_NOACTIVATE | WS_EX_NOREDIRECTIONBITMAP)
         : (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE);
 
     HWND hwnd = CreateWindowExW(
@@ -819,13 +820,19 @@ TaskbarControlAction TaskbarWindow::hit_test_control_locked(POINT point) const {
     if (!layout.visible) {
         return TaskbarControlAction::none;
     }
-    if (PtInRect(&layout.previous_rect, point)) {
+
+    auto contains = [&](RECT rect) {
+        InflateRect(&rect, kControlHitPadding, kControlHitPadding);
+        return PtInRect(&rect, point) != 0;
+    };
+
+    if (contains(layout.previous_rect)) {
         return TaskbarControlAction::previous;
     }
-    if (PtInRect(&layout.toggle_rect, point)) {
+    if (contains(layout.toggle_rect)) {
         return TaskbarControlAction::toggle_playback;
     }
-    if (PtInRect(&layout.next_rect, point)) {
+    if (contains(layout.next_rect)) {
         return TaskbarControlAction::next_track;
     }
     return TaskbarControlAction::none;
@@ -868,6 +875,7 @@ void TaskbarWindow::queue_control_locked(TaskbarControlAction action) {
     }
 
     pending_command_json_ = std::wstring(L"{\"action\":\"") + std::wstring(command) + L"\",\"source\":\"taskbar-control\"}";
+    append_debug_line((std::wstring(L"control queued: ") + std::wstring(command)).c_str());
     if (hwnd_) {
         PostMessageW(hwnd_, kRefreshMessage, 0, 0);
     }

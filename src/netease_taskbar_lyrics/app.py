@@ -32,14 +32,16 @@ class TaskbarLyricsApp:
         show_translation: bool = True,
         poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS,
         tick_interval_ms: int = DEFAULT_TICK_INTERVAL_MS,
+        remote_debug_port: int | None = 9222,
     ) -> None:
-        self.provider = MediaSessionProvider()
+        self.provider = MediaSessionProvider(remote_debug_port=remote_debug_port)
         self.lyric_client = NeteaseLyricClient()
         self.bridge = HostTaskbarBridge(config={"showTranslation": show_translation})
 
         self.poll_interval_seconds = max(0.4, float(poll_interval_seconds))
         self.tick_interval_ms = max(60, int(tick_interval_ms))
         self.show_translation = show_translation
+        self.remote_debug_port = int(remote_debug_port or 0) if remote_debug_port else 0
 
         self._session_queue: queue.Queue[MediaSessionSnapshot | None] = queue.Queue()
         self._lyric_queue: queue.Queue[LyricResult] = queue.Queue()
@@ -61,6 +63,7 @@ class TaskbarLyricsApp:
                 "pollIntervalSeconds": self.poll_interval_seconds,
                 "tickIntervalMs": self.tick_interval_ms,
                 "showTranslation": self.show_translation,
+                "remoteDebugPort": self.remote_debug_port,
             },
         )
 
@@ -339,12 +342,14 @@ def run(argv: list[str] | None = None) -> None:
     parser.add_argument("--no-translation", action="store_true", help="Hide translated lyric lines when available.")
     parser.add_argument("--poll-interval", type=float, default=DEFAULT_POLL_INTERVAL_SECONDS, help="Seconds between playback-source polls.")
     parser.add_argument("--tick-ms", type=int, default=DEFAULT_TICK_INTERVAL_MS, help="Milliseconds between host updates.")
+    parser.add_argument("--remote-debug-port", type=int, default=9222, help="Chromium remote debugging port for exact NetEase playback events. Set 0 to disable.")
     args = parser.parse_args(argv)
 
     app = TaskbarLyricsApp(
         show_translation=not args.no_translation,
         poll_interval_seconds=args.poll_interval,
         tick_interval_ms=args.tick_ms,
+        remote_debug_port=args.remote_debug_port,
     )
     try:
         app.start()

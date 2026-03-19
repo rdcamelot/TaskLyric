@@ -9,7 +9,10 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[2]
-DLL_PATH = ROOT / "build" / "host" / "tasklyric_host.dll"
+DLL_CANDIDATES = (
+    ROOT / "build-tasklyric" / "host" / "tasklyric_host.dll",
+    ROOT / "build" / "host" / "tasklyric_host.dll",
+)
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "showTranslation": True,
@@ -104,10 +107,12 @@ class HostTaskbarBridge:
         return json.loads(self._dll.tasklyric_get_state_json())
 
     def _load_dll(self):
-        if not DLL_PATH.exists():
-            raise FileNotFoundError(f"missing dll: {DLL_PATH}")
+        dll_path = next((candidate for candidate in DLL_CANDIDATES if candidate.exists()), None)
+        if dll_path is None:
+            joined = ', '.join(str(candidate) for candidate in DLL_CANDIDATES)
+            raise FileNotFoundError(f"missing dll: {joined}")
         self._add_mingw_runtime_dir()
-        return ctypes.WinDLL(str(DLL_PATH))
+        return ctypes.WinDLL(str(dll_path))
 
     def _bind_signatures(self) -> None:
         self._dll.tasklyric_initialize.argtypes = [ctypes.c_wchar_p]

@@ -1,17 +1,17 @@
 {
   "format": 1,
   "restore": {
-    "D:\\code\\Music\\tools\\TaskLyric.MediaSessionHelper\\TaskLyric.MediaSessionHelper.csproj": {}
+    "D:\\code\\TaskLyric\\tools\\TaskLyric.MediaSessionHelper\\TaskLyric.MediaSessionHelper.csproj": {}
   },
   "projects": {
-    "D:\\code\\Music\\tools\\TaskLyric.MediaSessionHelper\\TaskLyric.MediaSessionHelper.csproj": {
+    "D:\\code\\TaskLyric\\tools\\TaskLyric.MediaSessionHelper\\TaskLyric.MediaSessionHelper.csproj": {
       "version": "1.0.0",
       "restore": {
-        "projectUniqueName": "D:\\code\\Music\\tools\\TaskLyric.MediaSessionHelper\\TaskLyric.MediaSessionHelper.csproj",
+        "projectUniqueName": "D:\\code\\TaskLyric\\tools\\TaskLyric.MediaSessionHelper\\TaskLyric.MediaSessionHelper.csproj",
         "projectName": "TaskLyric.MediaSessionHelper",
-        "projectPath": "D:\\code\\Music\\tools\\TaskLyric.MediaSessionHelper\\TaskLyric.MediaSessionHelper.csproj",
+        "projectPath": "D:\\code\\TaskLyric\\tools\\TaskLyric.MediaSessionHelper\\TaskLyric.MediaSessionHelper.csproj",
         "packagesPath": "C:\\Users\\asus\\.nuget\\packages\\",
-        "outputPath": "D:\\code\\Music\\tools\\TaskLyric.MediaSessionHelper\\obj\\",
+        "outputPath": "D:\\code\\TaskLyric\\tools\\TaskLyric.MediaSessionHelper\\obj\\",
         "projectStyle": "PackageReference",
         "fallbackFolders": [
           "C:\\Program Files (x86)\\Microsoft Visual Studio\\Shared\\NuGetPackages"

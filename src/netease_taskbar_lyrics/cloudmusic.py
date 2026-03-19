@@ -148,6 +148,24 @@ class CloudMusicWindowProbe:
             return expected_artist in track_artist or track_artist in expected_artist
         return True
 
+    def get_track_by_song_id(self, song_id: int) -> CloudMusicTrack | None:
+        if song_id <= 0:
+            return None
+
+        playlist_track = next((track for track in self._load_playing_list() if track.song_id == song_id), None)
+        if playlist_track is None:
+            return None
+
+        candidate = self._pick_title_window(self._enumerate_cloudmusic_windows())
+        return CloudMusicTrack(
+            title=playlist_track.title,
+            artist=playlist_track.artist,
+            song_id=playlist_track.song_id,
+            duration_ms=playlist_track.duration_ms,
+            source_window_class=candidate.class_name if candidate else "",
+            source_window_title=candidate.title if candidate else "",
+        )
+
     def send_media_command(self, action: str) -> bool:
         normalized = action.strip().lower()
         app_command = ACTION_TO_APPCOMMAND.get(normalized)

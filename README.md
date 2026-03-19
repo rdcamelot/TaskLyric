@@ -15,7 +15,7 @@ What is already available:
 - a native taskbar window attached to `Shell_TrayWnd`
 - DirectComposition / Direct2D / DirectWrite based rendering
 - Win11 taskbar layout probing via UI Automation
-- a live bridge that follows real NetEase playback through a .NET SMTC helper first, then PowerShell SMTC, with a cloudmusic.exe window fallback when media sessions are unavailable
+- a live bridge that follows real NetEase playback through a Chromium remote-debug bridge first, then a .NET SMTC helper, then PowerShell SMTC, with a cloudmusic.exe window fallback when media sessions are unavailable
 - native taskbar transport controls for previous, play or pause, and next
 - lyric lookup through NetEase public interfaces with main lyric and translated lyric support
 - local development fixtures and replay scripts
@@ -60,7 +60,30 @@ Optional live-bridge flags:
 ```powershell
 python main.py --no-translation
 python main.py --poll-interval 1.0 --tick-ms 120
+python main.py --remote-debug-port 9222
+python main.py --remote-debug-port 0
 ```
+
+For exact progress, pause, and seek synchronization on current NetEase desktop builds, start Cloud Music with a Chromium remote debugging port first:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\launch_cloudmusic_with_debug.ps1 -Port 9222 -RestartExisting
+python main.py --remote-debug-port 9222
+```
+
+Run TaskLyric in the background without opening a terminal window:
+
+```powershell
+pythonw launcher.pyw --remote-debug-port 9222 --restart-cloudmusic-with-debug
+```
+
+Install a Startup shortcut so TaskLyric watches Cloud Music automatically after you sign in:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install_tasklyric_shortcut.ps1 -Startup -RestartCloudMusicWithDebug
+```
+
+The hidden launcher watches `cloudmusic.exe`, starts TaskLyric only when NetEase Cloud Music is running, and stops it after Cloud Music exits. The `-RestartCloudMusicWithDebug` mode is recommended if you want exact pause, seek, previous, and next synchronization from the taskbar controls.
 
 Run the development end-to-end replay flow:
 
@@ -84,13 +107,16 @@ powershell -ExecutionPolicy Bypass -File installer\package_tasklyric.ps1
 
 The current real-world connection path is:
 
-1. Try reading the current Windows media session through `tools/TaskLyric.MediaSessionHelper`, which uses `Windows.Media.Control` for playback state, timeline, and media commands.
-2. If that path does not surface a usable NetEase session, fall back to the older PowerShell SMTC probe.
-3. If media sessions are still unavailable, fall back to cloudmusic.exe window metadata and the local NetEase playing list.
-4. Resolve the current track through NetEase public interfaces when a direct song ID is not available.
-5. Fetch LRC and translated lyrics.
-6. Push the current lyric line into `tasklyric_host.dll`.
-7. Taskbar buttons send previous, play or pause, and next commands back through the host bridge.
+1. If NetEase Cloud Music is started with `--remote-debugging-port`, attach to its Chromium page and subscribe directly to `audioplayer.onLoad`, `audioplayer.onPlayProgress`, `audioplayer.onPlayState`, and `audioplayer.onSeek`.
+2. If that path is not available, try reading the current Windows media session through `tools/TaskLyric.MediaSessionHelper`, which uses `Windows.Media.Control` for playback state, timeline, and media commands.
+3. If that path does not surface a usable NetEase session, fall back to the older PowerShell SMTC probe.
+4. If media sessions are still unavailable, fall back to cloudmusic.exe window metadata and the local NetEase playing list.
+5. Resolve the current track through NetEase public interfaces when a direct song ID is not available.
+6. Fetch LRC and translated lyrics.
+7. Push the current lyric line into `tasklyric_host.dll`.
+8. Taskbar buttons send previous, play or pause, and next commands back through the host bridge.
+
+Why the remote-debug path matters: on the current NetEase desktop build used during development, the Chromium renderer starts with `--disable-features=...MediaSessionService,HardwareMediaKeyHandling...`, which means SMTC may not expose a usable playback timeline at all. The direct Chromium bridge avoids that limitation and gives line updates based on the same internal `audioplayer.*` events the client uses.
 
 This means TaskLyric can already follow real NetEase playback without the old BetterNCM dependency, but it does not yet hook directly into the NetEase process itself.
 
