@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import atexit
+import ctypes
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -14,6 +17,138 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_REMOTE_DEBUG_PORT = 9222
 DEFAULT_POLL_INTERVAL_SECONDS = 1.0
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+ERROR_ALREADY_EXISTS = 183
+MUTEX_NAME = "Local\\TaskLyricLauncherSingleton"
+LAUNCHER_STATE_PATH = ROOT / "state" / "launcher-state.json"
+DEBUG_READY_GRACE_SECONDS = 18.0
+RESTART_COOLDOWN_SECONDS = 30.0
+CLOUDMUSIC_STOP_TIMEOUT_SECONDS = 10.0
+
+
+def _append_log(message: str) -> None:
+    try:
+        log_path = ROOT / "logs" / "tasklyric-launcher.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as stream:
+            stream.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {message}\n")
+    except OSError:
+        return
+
+
+def _write_launcher_state(payload: dict[str, object]) -> None:
+    try:
+        LAUNCHER_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        LAUNCHER_STATE_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError:
+        return
+
+
+def _read_launcher_state() -> dict[str, object] | None:
+    try:
+        data = json.loads(LAUNCHER_STATE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _remove_launcher_state() -> None:
+    try:
+        LAUNCHER_STATE_PATH.unlink(missing_ok=True)
+    except OSError:
+        return
+
+
+def _pid_exists(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        completed = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", f"Get-Process -Id {pid} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id | ConvertTo-Json -Compress"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=8,
+            creationflags=CREATE_NO_WINDOW,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return str(pid) in (completed.stdout or "")
+
+
+def _stop_pid(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        completed = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", f"Stop-Process -Id {pid} -Force -ErrorAction SilentlyContinue"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=8,
+            creationflags=CREATE_NO_WINDOW,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return completed.returncode == 0
+
+
+def _stop_tasklyric_python_processes() -> bool:
+    command = (
+        "Get-CimInstance Win32_Process | "
+        "Where-Object { ($_.Name -ieq 'pythonw.exe' -or $_.Name -ieq 'python.exe') -and $_.CommandLine -and ("
+        "$_.CommandLine -like '*TaskLyric*main.py*' -or "
+        "$_.CommandLine -like '*TaskLyric*launcher.pyw*') } | "
+        "Select-Object -ExpandProperty ProcessId | ConvertTo-Json -Compress"
+    )
+    payload = _powershell_json(command)
+    pids: list[int] = []
+    if isinstance(payload, int):
+        pids = [payload]
+    elif isinstance(payload, list):
+        pids = [int(value) for value in payload if isinstance(value, (int, float))]
+    stopped = False
+    current_pid = os.getpid()
+    for pid in pids:
+        if pid > 0 and pid != current_pid and _pid_exists(pid):
+            _stop_pid(pid)
+            stopped = True
+    return stopped
+
+
+def stop_existing_launcher() -> bool:
+    state = _read_launcher_state() or {}
+    child_pid = int(state.get("tasklyricPid") or 0)
+    launcher_pid = int(state.get("launcherPid") or 0)
+    stopped = False
+    if child_pid and _pid_exists(child_pid):
+        _append_log(f"external stop requested for tasklyric pid={child_pid}")
+        _stop_pid(child_pid)
+        stopped = True
+    if launcher_pid and _pid_exists(launcher_pid):
+        _append_log(f"external stop requested for launcher pid={launcher_pid}")
+        _stop_pid(launcher_pid)
+        stopped = True
+    if _stop_tasklyric_python_processes():
+        _append_log("external stop requested for residual TaskLyric python processes")
+        stopped = True
+    _remove_launcher_state()
+    return stopped
+
+
+def _acquire_single_instance_mutex() -> tuple[int | None, bool]:
+    handle = ctypes.windll.kernel32.CreateMutexW(None, False, MUTEX_NAME)
+    if not handle:
+        return None, True
+    already_running = ctypes.GetLastError() == ERROR_ALREADY_EXISTS
+    return int(handle), already_running
+
+
+def _release_single_instance_mutex(handle: int | None) -> None:
+    if not handle:
+        return
+    ctypes.windll.kernel32.CloseHandle(ctypes.c_void_p(handle))
 
 
 def _powershell_json(command: str):
@@ -82,6 +217,39 @@ def remote_debug_available(port: int) -> bool:
     return isinstance(payload, list) and len(payload) > 0
 
 
+def remote_debug_target_id(port: int) -> str:
+    url = f"http://127.0.0.1:{int(port)}/json/list"
+    try:
+        with urllib_request.urlopen(url, timeout=1.0) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (OSError, urllib_error.URLError, TimeoutError, json.JSONDecodeError):
+        return ""
+    if not isinstance(payload, list):
+        return ""
+    best_score = -1
+    best_target = ""
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        ws_url = str(item.get("webSocketDebuggerUrl") or "").strip()
+        page_url = str(item.get("url") or "")
+        title = str(item.get("title") or "")
+        if not ws_url:
+            continue
+        text_blob = f"{title} {page_url}".lower()
+        score = 0
+        if item.get("type") == "page":
+            score += 10
+        if "orpheus" in text_blob:
+            score += 20
+        if "cloudmusic" in text_blob or "app.html" in text_blob or "subapp.html" in text_blob:
+            score += 10
+        if score > best_score:
+            best_score = score
+            best_target = ws_url
+    return best_target
+
+
 def launch_cloudmusic_with_debug(port: int) -> bool:
     executable = find_cloudmusic_executable()
     if executable is None:
@@ -100,7 +268,7 @@ def launch_cloudmusic_with_debug(port: int) -> bool:
     return True
 
 
-def stop_cloudmusic() -> None:
+def stop_cloudmusic(timeout_seconds: float = CLOUDMUSIC_STOP_TIMEOUT_SECONDS) -> bool:
     try:
         subprocess.run(
             ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "Get-Process -Name cloudmusic -ErrorAction SilentlyContinue | Stop-Process -Force"],
@@ -112,7 +280,14 @@ def stop_cloudmusic() -> None:
             creationflags=CREATE_NO_WINDOW,
         )
     except (OSError, subprocess.SubprocessError):
-        return
+        return False
+
+    deadline = time.monotonic() + max(1.0, float(timeout_seconds))
+    while time.monotonic() < deadline:
+        if not is_cloudmusic_running():
+            return True
+        time.sleep(0.3)
+    return not is_cloudmusic_running()
 
 
 def _pythonw_executable() -> str:
@@ -140,8 +315,19 @@ class TaskLyricBackgroundLauncher:
         self._tasklyric_process: subprocess.Popen[str] | None = None
         self._launched_cloudmusic = False
         self._last_restart_attempt = 0.0
+        self._mutex_handle: int | None = None
+        self._last_remote_target_id = ""
+        self._waiting_for_debug_ready = False
+        self._debug_wait_started_at = 0.0
+        self._warned_missing_debug_ready = False
 
     def run(self) -> None:
+        self._mutex_handle, already_running = _acquire_single_instance_mutex()
+        if already_running:
+            _append_log("launcher start ignored because another launcher instance is already running")
+            return
+
+        atexit.register(_remove_launcher_state)
         try:
             while True:
                 self._tick()
@@ -150,29 +336,88 @@ class TaskLyricBackgroundLauncher:
             pass
         finally:
             self._stop_tasklyric()
+            _remove_launcher_state()
+            _release_single_instance_mutex(self._mutex_handle)
+            self._mutex_handle = None
 
     def _tick(self) -> None:
+        now = time.monotonic()
         running = is_cloudmusic_running()
+        target_id = remote_debug_target_id(self.remote_debug_port) if self.remote_debug_port > 0 else ""
+        debug_ready = bool(target_id)
 
         if self.launch_cloudmusic and not running and not self._launched_cloudmusic:
             if launch_cloudmusic_with_debug(self.remote_debug_port):
+                _append_log(f"launched cloudmusic with debug port {self.remote_debug_port}")
                 self._launched_cloudmusic = True
-                running = True
+                self._waiting_for_debug_ready = True
+                self._debug_wait_started_at = now
+                return
 
-        if running and self.restart_with_debug and not remote_debug_available(self.remote_debug_port):
-            now = time.monotonic()
-            if now - self._last_restart_attempt >= 8.0:
+        if running and not debug_ready:
+            self._stop_tasklyric()
+            self._last_remote_target_id = ""
+
+            if self.restart_with_debug:
+                if not self._waiting_for_debug_ready:
+                    _append_log(f"waiting for remote debug port {self.remote_debug_port} to become ready")
+                    self._waiting_for_debug_ready = True
+                    self._debug_wait_started_at = now
+                elif self._debug_wait_started_at <= 0.0:
+                    self._debug_wait_started_at = now
+
+                if now - self._debug_wait_started_at < DEBUG_READY_GRACE_SECONDS:
+                    return
+
+                if now - self._last_restart_attempt < RESTART_COOLDOWN_SECONDS:
+                    return
+
                 self._last_restart_attempt = now
+                _append_log(
+                    f"remote debug port {self.remote_debug_port} unavailable after grace period; restarting cloudmusic with debug"
+                )
                 stop_cloudmusic()
-                time.sleep(0.8)
+                time.sleep(1.2)
                 if launch_cloudmusic_with_debug(self.remote_debug_port):
+                    _append_log(f"restarted cloudmusic with debug port {self.remote_debug_port}")
                     self._launched_cloudmusic = True
-                running = True
+                self._debug_wait_started_at = time.monotonic()
+                return
+
+            if not self._warned_missing_debug_ready:
+                _append_log(
+                    f"cloudmusic is running but remote debug port {self.remote_debug_port} is not ready; waiting without starting tasklyric"
+                )
+                self._warned_missing_debug_ready = True
+            self._waiting_for_debug_ready = False
+            self._debug_wait_started_at = 0.0
+            return
+
+        if running and debug_ready:
+            process = self._tasklyric_process
+            target_changed = bool(self._last_remote_target_id) and target_id != self._last_remote_target_id
+            if target_changed and process is not None and process.poll() is None:
+                _append_log("remote debug target changed; restarting tasklyric for a clean reattach")
+                self._stop_tasklyric()
+            elif self._waiting_for_debug_ready and process is not None and process.poll() is None:
+                _append_log("remote debug became ready; restarting tasklyric to avoid a half-initialized session")
+                self._stop_tasklyric()
+            self._waiting_for_debug_ready = False
+            self._debug_wait_started_at = 0.0
+            self._warned_missing_debug_ready = False
+            self._last_remote_target_id = target_id
+            self._ensure_tasklyric_running()
+            return
 
         if running:
+            self._warned_missing_debug_ready = False
             self._ensure_tasklyric_running()
         else:
             self._launched_cloudmusic = False
+            self._waiting_for_debug_ready = False
+            self._debug_wait_started_at = 0.0
+            self._warned_missing_debug_ready = False
+            self._last_remote_target_id = ""
             self._stop_tasklyric()
 
     def _ensure_tasklyric_running(self) -> None:
@@ -192,18 +437,32 @@ class TaskLyricBackgroundLauncher:
             stderr=log_stream,
             creationflags=CREATE_NO_WINDOW,
         )
+        _write_launcher_state({
+            "launcherPid": os.getpid(),
+            "tasklyricPid": self._tasklyric_process.pid,
+            "remoteDebugPort": self.remote_debug_port,
+            "updatedAt": time.time(),
+        })
+        _append_log(f"started tasklyric pid={self._tasklyric_process.pid} remote_debug_port={self.remote_debug_port}")
 
     def _stop_tasklyric(self) -> None:
         process = self._tasklyric_process
         if process is None:
             return
         if process.poll() is None:
+            _append_log(f"stopping tasklyric pid={process.pid}")
             process.terminate()
             try:
                 process.wait(timeout=4.0)
             except subprocess.TimeoutExpired:
                 process.kill()
         self._tasklyric_process = None
+        _write_launcher_state({
+            "launcherPid": os.getpid(),
+            "tasklyricPid": 0,
+            "remoteDebugPort": self.remote_debug_port,
+            "updatedAt": time.time(),
+        })
 
 
 def run(argv: Iterable[str] | None = None) -> None:
@@ -211,8 +470,18 @@ def run(argv: Iterable[str] | None = None) -> None:
     parser.add_argument("--remote-debug-port", type=int, default=DEFAULT_REMOTE_DEBUG_PORT)
     parser.add_argument("--poll-interval", type=float, default=DEFAULT_POLL_INTERVAL_SECONDS)
     parser.add_argument("--launch-cloudmusic", action="store_true", help="Launch NetEase Cloud Music with the remote debug port before starting TaskLyric.")
-    parser.add_argument("--restart-cloudmusic-with-debug", action="store_true", help="If Cloud Music is already running without a remote debug port, restart it with the debug port so exact sync and taskbar controls work.")
+    parser.add_argument("--restart-cloudmusic-with-debug", action=argparse.BooleanOptionalAction, default=False, help="If Cloud Music is already running without a remote debug port, restart it with the debug port so exact sync and taskbar controls work.")
+    parser.add_argument("--stop", action="store_true", help="Stop the existing TaskLyric launcher and background TaskLyric process.")
     args = parser.parse_args(list(argv) if argv is not None else None)
+
+    if args.stop:
+        stop_existing_launcher()
+        return
+
+    if args.launch_cloudmusic or args.restart_cloudmusic_with_debug:
+        if stop_existing_launcher():
+            _append_log("replacing existing launcher instance for an explicit launch request")
+            time.sleep(1.0)
 
     launcher = TaskLyricBackgroundLauncher(
         remote_debug_port=args.remote_debug_port,

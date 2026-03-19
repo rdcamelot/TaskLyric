@@ -1,21 +1,113 @@
-param(
+﻿param(
     [switch]$Startup,
     [switch]$Desktop,
     [switch]$LaunchCloudMusic,
     [switch]$RestartCloudMusicWithDebug,
+    [switch]$ReplaceCloudMusicShortcut,
+    [switch]$CleanupLegacyShortcuts,
     [int]$Port = 9222
 )
 
 $root = Split-Path -Parent $PSScriptRoot
 $launcher = Join-Path $root 'launcher.pyw'
-if (-not (Test-Path $launcher)) {
-    throw "launcher.pyw not found: $launcher"
+$launcherExeCandidates = @(
+    (Join-Path $root 'build-tasklyric\launcher\tasklyric_launcher.exe'),
+    (Join-Path $root 'build\launcher\tasklyric_launcher.exe'),
+    (Join-Path $root 'dist\tasklyric_launcher.exe')
+)
+$launcherExe = $launcherExeCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+function Get-LauncherCommand {
+    if ($launcherExe) {
+        return @{
+            TargetPath = $launcherExe
+            Arguments = @('--remote-debug-port', $Port)
+        }
+    }
+
+    if (-not (Test-Path $launcher)) {
+        throw "launcher.pyw not found: $launcher"
+    }
+    $pythonw = Get-Command pythonw.exe -ErrorAction SilentlyContinue
+    if (-not $pythonw) {
+        throw 'pythonw.exe was not found in PATH.'
+    }
+    return @{
+        TargetPath = $pythonw.Source
+        Arguments = @('"' + $launcher + '"', '--remote-debug-port', $Port)
+    }
 }
 
-$pythonw = Get-Command pythonw.exe -ErrorAction SilentlyContinue
-if (-not $pythonw) {
-    throw 'pythonw.exe was not found in PATH.'
+function Find-CloudMusicExecutable {
+    $candidates = @(
+        'D:\CloudMusic\CloudMusic\cloudmusic.exe',
+        (Join-Path $env:ProgramFiles 'NetEase\CloudMusic\cloudmusic.exe'),
+        (Join-Path $env:LOCALAPPDATA 'Programs\NetEase\CloudMusic\cloudmusic.exe')
+    )
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path $candidate)) {
+            return $candidate
+        }
+    }
+
+    $processPath = Get-CimInstance Win32_Process -Filter "name='cloudmusic.exe'" -ErrorAction SilentlyContinue |
+        Select-Object -First 1 -ExpandProperty ExecutablePath
+    if ($processPath -and (Test-Path $processPath)) {
+        return $processPath
+    }
+    return $null
 }
+
+function Set-Shortcut {
+    param(
+        [string]$LinkPath,
+        [string]$TargetPath,
+        [string[]]$Arguments,
+        [string]$WorkingDirectory,
+        [string]$IconLocation,
+        [string]$Description
+    )
+
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($LinkPath)
+    $shortcut.TargetPath = $TargetPath
+    $shortcut.Arguments = [string]::Join(' ', $Arguments)
+    $shortcut.WorkingDirectory = $WorkingDirectory
+    if ($IconLocation) {
+        $shortcut.IconLocation = $IconLocation
+    }
+    if ($Description) {
+        $shortcut.Description = $Description
+    }
+    $shortcut.Save()
+}
+
+function Get-CloudMusicShortcutCandidates {
+    $desktop = [Environment]::GetFolderPath('Desktop')
+    $startMenuUser = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'
+    $startMenuCommon = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs'
+    $roots = @($desktop, $startMenuUser, $startMenuCommon) | Where-Object { $_ -and (Test-Path $_) }
+    $patterns = @('*网易云*.lnk', '*CloudMusic*.lnk', '*NetEase*Music*.lnk')
+    $results = @()
+    foreach ($rootPath in $roots | Select-Object -Unique) {
+        foreach ($pattern in $patterns) {
+            $results += Get-ChildItem -Path $rootPath -Filter $pattern -Recurse -ErrorAction SilentlyContinue
+        }
+    }
+    return $results | Sort-Object FullName -Unique
+}
+
+function Backup-ShortcutIfNeeded {
+    param([string]$LinkPath)
+    $backupPath = "$LinkPath.tasklyric-backup"
+    if ((Test-Path $LinkPath) -and -not (Test-Path $backupPath)) {
+        Copy-Item -LiteralPath $LinkPath -Destination $backupPath -Force
+    }
+}
+
+$launcherCommand = Get-LauncherCommand
+$cloudMusicExe = Find-CloudMusicExecutable
+$cloudMusicIcon = if ($cloudMusicExe) { "$cloudMusicExe,0" } else { "$env:SystemRoot\System32\SHELL32.dll,220" }
 
 $targets = @()
 if ($Startup) {
@@ -27,27 +119,46 @@ if ($Desktop) {
 if ($targets.Count -eq 0) {
     $targets += [Environment]::GetFolderPath('Desktop')
 }
+$targets = $targets | Select-Object -Unique
 
-$arguments = @('"' + $launcher + '"', '--remote-debug-port', $Port)
-if ($LaunchCloudMusic) {
+$desktopMode = $targets -contains [Environment]::GetFolderPath('Desktop')
+$shouldLaunchCloudMusic = $LaunchCloudMusic.IsPresent -or ($desktopMode -and -not $Startup)
+$shouldRestartWithDebug = $RestartCloudMusicWithDebug.IsPresent -or $shouldLaunchCloudMusic
+
+$arguments = @($launcherCommand.Arguments)
+if ($shouldLaunchCloudMusic) {
     $arguments += '--launch-cloudmusic'
 }
-if ($RestartCloudMusicWithDebug) {
+if ($shouldRestartWithDebug) {
     $arguments += '--restart-cloudmusic-with-debug'
 }
-$argumentLine = [string]::Join(' ', $arguments)
 
-$wsh = New-Object -ComObject WScript.Shell
-foreach ($target in $targets | Select-Object -Unique) {
+foreach ($target in $targets) {
     if (-not (Test-Path $target)) {
         continue
     }
-    $linkPath = Join-Path $target 'TaskLyric.lnk'
-    $shortcut = $wsh.CreateShortcut($linkPath)
-    $shortcut.TargetPath = $pythonw.Source
-    $shortcut.Arguments = $argumentLine
-    $shortcut.WorkingDirectory = $root
-    $shortcut.IconLocation = "$env:SystemRoot\System32\SHELL32.dll,220"
-    $shortcut.Save()
+    $name = if ($target -eq [Environment]::GetFolderPath('Startup')) { 'TaskLyric Background.lnk' } else { 'TaskLyric Launcher.lnk' }
+    $linkPath = Join-Path $target $name
+    Set-Shortcut -LinkPath $linkPath -TargetPath $launcherCommand.TargetPath -Arguments $arguments -WorkingDirectory $root -IconLocation $cloudMusicIcon -Description 'Launch NetEase Cloud Music with TaskLyric.'
     Write-Host "Created shortcut: $linkPath"
+
+    if ($CleanupLegacyShortcuts) {
+        $legacy = Join-Path $target 'TaskLyric.lnk'
+        if (Test-Path $legacy) {
+            Remove-Item -LiteralPath $legacy -Force -ErrorAction SilentlyContinue
+            Write-Host "Removed legacy shortcut: $legacy"
+        }
+    }
+}
+
+if ($ReplaceCloudMusicShortcut) {
+    $shortcutTargets = Get-CloudMusicShortcutCandidates
+    if (-not $shortcutTargets) {
+        Write-Warning 'No Cloud Music shortcut was found to replace.'
+    }
+    foreach ($shortcutFile in $shortcutTargets) {
+        Backup-ShortcutIfNeeded -LinkPath $shortcutFile.FullName
+        Set-Shortcut -LinkPath $shortcutFile.FullName -TargetPath $launcherCommand.TargetPath -Arguments $arguments -WorkingDirectory $root -IconLocation $cloudMusicIcon -Description 'Launch NetEase Cloud Music with TaskLyric.'
+        Write-Host "Replaced shortcut target: $($shortcutFile.FullName)"
+    }
 }

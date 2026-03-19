@@ -37,6 +37,8 @@ cmake -S . -B build -G "MinGW Makefiles"
 cmake --build build
 ```
 
+The build now also produces a native launcher stub `tasklyric_launcher.exe`, which starts the background launcher without a console window. In a clean build directory used in this repo, the executable is usually generated at `build-tasklyric\launcher\tasklyric_launcher.exe`.
+
 Build the Windows media-session helper:
 
 ```powershell
@@ -74,16 +76,52 @@ python main.py --remote-debug-port 9222
 Run TaskLyric in the background without opening a terminal window:
 
 ```powershell
-pythonw launcher.pyw --remote-debug-port 9222 --restart-cloudmusic-with-debug
+build-tasklyric\launcher\tasklyric_launcher.exe --remote-debug-port 9222
 ```
+
+This safer default no longer restarts a manually opened Cloud Music instance. TaskLyric will start only after the remote-debug target is actually ready.
+
+If you explicitly want TaskLyric to restart Cloud Music into debug mode for exact pause, seek, previous, and next synchronization, add:
+
+```powershell
+--restart-cloudmusic-with-debug
+```
+
+Stop the existing background launcher and its TaskLyric child:
+
+```powershell
+python launcher.pyw --stop
+```
+
+Launching `launcher.pyw` repeatedly is now safe: only one launcher instance will stay alive.
+
+Create a product-style desktop launcher shortcut:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install_tasklyric_shortcut.ps1 -Desktop -CleanupLegacyShortcuts
+```
+
+This creates `TaskLyric Launcher.lnk`. Double-clicking it launches NetEase Cloud Music in the correct debug-enabled mode and then starts TaskLyric without opening a terminal.
 
 Install a Startup shortcut so TaskLyric watches Cloud Music automatically after you sign in:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\install_tasklyric_shortcut.ps1 -Startup -RestartCloudMusicWithDebug
+powershell -ExecutionPolicy Bypass -File scripts\install_tasklyric_shortcut.ps1 -Startup -CleanupLegacyShortcuts
 ```
 
-The hidden launcher watches `cloudmusic.exe`, starts TaskLyric only when NetEase Cloud Music is running, and stops it after Cloud Music exits. The `-RestartCloudMusicWithDebug` mode is recommended if you want exact pause, seek, previous, and next synchronization from the taskbar controls.
+This creates `TaskLyric Background.lnk` in the Startup folder. It watches `cloudmusic.exe`, starts TaskLyric only when NetEase Cloud Music is running, and stops it after Cloud Music exits.
+
+If you want your existing Cloud Music shortcuts to open through TaskLyric as well, replace those shortcuts only:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install_tasklyric_shortcut.ps1 -Desktop -ReplaceCloudMusicShortcut
+```
+
+This does not modify `cloudmusic.exe` itself. It only rewrites matching `.lnk` shortcuts and keeps backups with a `.tasklyric-backup` suffix. You can restore them with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scriptsestore_cloudmusic_shortcuts.ps1
+```
 
 Run the development end-to-end replay flow:
 
@@ -133,6 +171,13 @@ Useful generated files:
 - `state/last-event.json`
 - `state/last-native-update.json`
 - `logs/tasklyric-host.log`
+- `logs/tasklyric-launcher.log`
+- `state/launcher-state.json`
+
+On this repo they are usually located at:
+
+- `D:\code\TaskLyric\logs\tasklyric-launcher.log`
+- `D:\code\TaskLyric\state\launcher-state.json`
 
 A successful replay should report a native window snapshot similar to:
 

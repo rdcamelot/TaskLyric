@@ -198,17 +198,22 @@ class CloudMusicRemoteBridge:
             args = [args]
 
         if event_type == "onLoad":
-            song_id = _extract_song_id(args[0] if args else None)
+            play_id = str(args[0] or "") if len(args) >= 1 else ""
+            song_id = _extract_song_id(play_id)
+            now = time.monotonic()
             with self._lock:
                 state = self._state
+                playback_status = state.playback_status
+                if play_id and play_id != state.play_id:
+                    playback_status = "Unknown"
                 self._state = CloudMusicRemoteState(
                     connected=state.connected,
-                    play_id=state.play_id,
+                    play_id=play_id or state.play_id,
                     resume_or_pause_id=state.resume_or_pause_id,
                     song_id=song_id or state.song_id,
-                    position_ms=state.position_ms,
-                    playback_status=state.playback_status,
-                    fetched_at=state.fetched_at,
+                    position_ms=0 if play_id and play_id != state.play_id else state.position_ms,
+                    playback_status=playback_status,
+                    fetched_at=now,
                     debugger_url=state.debugger_url,
                     page_title=state.page_title,
                 )
@@ -222,7 +227,14 @@ class CloudMusicRemoteBridge:
             with self._lock:
                 state = self._state
                 playback_status = state.playback_status
-                if playback_status.strip().lower() not in {"paused", "stopped"} or now - state.fetched_at > 1.0:
+                same_track = not play_id or not state.play_id or play_id == state.play_id
+                progressed = position_ms > max(state.position_ms + 900, 1200)
+                if (
+                    playback_status.strip().lower() not in {"paused", "stopped"}
+                    or not same_track
+                    or progressed
+                    or now - state.fetched_at > 1.0
+                ):
                     playback_status = "Playing"
                 self._state = CloudMusicRemoteState(
                     connected=state.connected,
@@ -260,18 +272,21 @@ class CloudMusicRemoteBridge:
 
         if event_type == "onSeek":
             play_id = str(args[0] or "") if len(args) >= 1 else ""
-            position_ms = _normalize_progress_value(args[3] if len(args) >= 4 else 0)
+            position_ms = _extract_seek_position_ms(args[1:])
             song_id = _extract_song_id(play_id)
             now = time.monotonic()
             with self._lock:
                 state = self._state
+                playback_status = state.playback_status
+                if playback_status == "Unknown" and position_ms > 0:
+                    playback_status = "Playing"
                 self._state = CloudMusicRemoteState(
                     connected=state.connected,
                     play_id=play_id or state.play_id,
                     resume_or_pause_id=state.resume_or_pause_id,
                     song_id=song_id or state.song_id,
                     position_ms=position_ms,
-                    playback_status=state.playback_status,
+                    playback_status=playback_status,
                     fetched_at=now,
                     debugger_url=state.debugger_url,
                     page_title=state.page_title,
@@ -501,9 +516,18 @@ def _install_script(binding_name: str) -> str:
     return f"""
 (() => {{
   const bindingName = {binding_name_json};
+  const state = window.__tasklyricBridgeState || (window.__tasklyricBridgeState = {{
+    installed: false,
+    bindingName: bindingName,
+  }});
+  state.bindingName = bindingName;
   const emit = (type, args = []) => {{
     try {{
-      window[bindingName](JSON.stringify({{ type, args: Array.from(args) }}));
+      const activeBindingName = state.bindingName || bindingName;
+      const binding = window[activeBindingName];
+      if (typeof binding === 'function') {{
+        binding(JSON.stringify({{ type, args: Array.from(args) }}));
+      }}
     }} catch (error) {{
     }}
   }};
@@ -511,20 +535,19 @@ def _install_script(binding_name: str) -> str:
     if (!window.channel || typeof window.channel.registerCall !== 'function') {{
       return false;
     }}
-    if (window.__tasklyricBridgeInstalled) {{
-      return true;
+    if (!state.installed) {{
+      window.channel.registerCall('audioplayer.onLoad', (...args) => emit('onLoad', args));
+      window.channel.registerCall('audioplayer.onPlayProgress', (...args) => emit('onPlayProgress', args));
+      window.channel.registerCall('audioplayer.onPlayState', (...args) => emit('onPlayState', args));
+      window.channel.registerCall('audioplayer.onSeek', (...args) => emit('onSeek', args));
+      window.channel.registerCall('audioplayer.onEnd', (...args) => emit('onEnd', args));
+      state.installed = true;
     }}
-    window.__tasklyricBridgeInstalled = true;
-    window.channel.registerCall('audioplayer.onLoad', (...args) => emit('onLoad', args));
-    window.channel.registerCall('audioplayer.onPlayProgress', (...args) => emit('onPlayProgress', args));
-    window.channel.registerCall('audioplayer.onPlayState', (...args) => emit('onPlayState', args));
-    window.channel.registerCall('audioplayer.onSeek', (...args) => emit('onSeek', args));
-    window.channel.registerCall('audioplayer.onEnd', (...args) => emit('onEnd', args));
     emit('bridgeReady', []);
     return true;
   }};
   if (install()) {{
-    return {{ ok: true, installed: true }};
+    return {{ ok: true, installed: state.installed, rebound: true }};
   }}
   if (!window.__tasklyricBridgeInstallTimer) {{
     window.__tasklyricBridgeInstallTimer = setInterval(() => {{
@@ -614,6 +637,20 @@ def _extract_song_id(raw: Any) -> int:
         if head.isdigit():
             return int(head)
     return 0
+
+
+def _extract_seek_position_ms(values: list[Any]) -> int:
+    numeric_values: list[float] = []
+    for value in values:
+        try:
+            numeric_values.append(float(value))
+        except (TypeError, ValueError):
+            continue
+    if not numeric_values:
+        return 0
+
+    # NetEase seek payloads can vary; the target position is consistently the last numeric value.
+    return _normalize_progress_value(numeric_values[-1])
 
 
 def _normalize_progress_value(raw: Any) -> int:
