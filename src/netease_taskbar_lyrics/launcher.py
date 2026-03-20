@@ -21,6 +21,7 @@ ERROR_ALREADY_EXISTS = 183
 MUTEX_NAME = "Local\\TaskLyricLauncherSingleton"
 LAUNCHER_STATE_PATH = ROOT / "state" / "launcher-state.json"
 DEBUG_READY_GRACE_SECONDS = 18.0
+DEBUG_TARGET_STABLE_SECONDS = 10.0
 RESTART_COOLDOWN_SECONDS = 30.0
 CLOUDMUSIC_STOP_TIMEOUT_SECONDS = 10.0
 
@@ -268,6 +269,43 @@ def launch_cloudmusic_with_debug(port: int) -> bool:
     return True
 
 
+def find_tasklyric_launcher_executable() -> Path | None:
+    candidates = [
+        ROOT / "build-tasklyric" / "launcher" / "tasklyric_launcher.exe",
+        ROOT / "build" / "launcher" / "tasklyric_launcher.exe",
+        ROOT / "dist" / "tasklyric_launcher.exe",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def start_tasklyric_launcher_process(arguments: list[str]) -> bool:
+    launcher_executable = find_tasklyric_launcher_executable()
+    command: list[str]
+    if launcher_executable is not None:
+        command = [str(launcher_executable), *arguments]
+    else:
+        launcher_script = ROOT / "launcher.pyw"
+        if not launcher_script.exists():
+            return False
+        command = [_pythonw_executable(), str(launcher_script), *arguments]
+
+    try:
+        subprocess.Popen(
+            command,
+            cwd=str(ROOT),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=CREATE_NO_WINDOW,
+        )
+    except OSError:
+        return False
+    return True
+
+
 def stop_cloudmusic(timeout_seconds: float = CLOUDMUSIC_STOP_TIMEOUT_SECONDS) -> bool:
     try:
         subprocess.run(
@@ -319,7 +357,25 @@ class TaskLyricBackgroundLauncher:
         self._last_remote_target_id = ""
         self._waiting_for_debug_ready = False
         self._debug_wait_started_at = 0.0
+        self._debug_target_stable_since = 0.0
+        self._last_seen_remote_target_id = ""
         self._warned_missing_debug_ready = False
+        self._should_exit = False
+        self._handoff_arguments: list[str] | None = None
+
+    def _schedule_launcher_handoff(self, *, launch_cloudmusic: bool, restart_with_debug: bool, reason: str) -> None:
+        if self._handoff_arguments is not None:
+            return
+        arguments = ["--remote-debug-port", str(self.remote_debug_port)]
+        if launch_cloudmusic:
+            arguments.append("--launch-cloudmusic")
+        if restart_with_debug:
+            arguments.append("--restart-cloudmusic-with-debug")
+        arguments.append("--replace-existing")
+        self._handoff_arguments = arguments
+        self._should_exit = True
+        _append_log(f"scheduling launcher handoff: {reason}")
+
 
     def run(self) -> None:
         self._mutex_handle, already_running = _acquire_single_instance_mutex()
@@ -331,6 +387,8 @@ class TaskLyricBackgroundLauncher:
         try:
             while True:
                 self._tick()
+                if self._should_exit:
+                    break
                 time.sleep(self.poll_interval_seconds)
         except KeyboardInterrupt:
             pass
@@ -339,12 +397,28 @@ class TaskLyricBackgroundLauncher:
             _remove_launcher_state()
             _release_single_instance_mutex(self._mutex_handle)
             self._mutex_handle = None
+            if self._handoff_arguments is not None:
+                if start_tasklyric_launcher_process(self._handoff_arguments):
+                    _append_log("launcher handoff started a fresh launcher process")
+                else:
+                    _append_log("launcher handoff failed to start a fresh launcher process")
 
     def _tick(self) -> None:
         now = time.monotonic()
         running = is_cloudmusic_running()
         target_id = remote_debug_target_id(self.remote_debug_port) if self.remote_debug_port > 0 else ""
-        debug_ready = bool(target_id)
+        debug_target_seen = bool(target_id)
+        if debug_target_seen:
+            if target_id != self._last_seen_remote_target_id:
+                self._last_seen_remote_target_id = target_id
+                self._debug_target_stable_since = now
+                _append_log("remote debug target changed; waiting for stability before starting tasklyric")
+        else:
+            self._last_seen_remote_target_id = ""
+            self._debug_target_stable_since = 0.0
+
+        debug_target_stable = bool(debug_target_seen and self._debug_target_stable_since > 0.0 and (now - self._debug_target_stable_since) >= DEBUG_TARGET_STABLE_SECONDS)
+        debug_ready = bool(debug_target_stable)
 
         if self.launch_cloudmusic and not running and not self._launched_cloudmusic:
             if launch_cloudmusic_with_debug(self.remote_debug_port):
@@ -357,6 +431,17 @@ class TaskLyricBackgroundLauncher:
         if running and not debug_ready:
             self._stop_tasklyric()
             self._last_remote_target_id = ""
+
+            if debug_target_seen and not debug_target_stable:
+                if not self._warned_missing_debug_ready:
+                    _append_log(
+                        f"remote debug target detected on {self.remote_debug_port} but not stable yet; delaying tasklyric start"
+                    )
+                    self._warned_missing_debug_ready = True
+                self._waiting_for_debug_ready = True
+                if self._debug_wait_started_at <= 0.0:
+                    self._debug_wait_started_at = now
+                return
 
             if self.restart_with_debug:
                 if not self._waiting_for_debug_ready:
@@ -374,14 +459,14 @@ class TaskLyricBackgroundLauncher:
 
                 self._last_restart_attempt = now
                 _append_log(
-                    f"remote debug port {self.remote_debug_port} unavailable after grace period; restarting cloudmusic with debug"
+                    f"remote debug port {self.remote_debug_port} unavailable after grace period; restarting cloudmusic with a fresh launcher handoff"
                 )
                 stop_cloudmusic()
-                time.sleep(1.2)
-                if launch_cloudmusic_with_debug(self.remote_debug_port):
-                    _append_log(f"restarted cloudmusic with debug port {self.remote_debug_port}")
-                    self._launched_cloudmusic = True
-                self._debug_wait_started_at = time.monotonic()
+                self._schedule_launcher_handoff(
+                    launch_cloudmusic=True,
+                    restart_with_debug=True,
+                    reason=f"cloudmusic must be relaunched with debug port {self.remote_debug_port}",
+                )
                 return
 
             if not self._warned_missing_debug_ready:
@@ -416,6 +501,8 @@ class TaskLyricBackgroundLauncher:
             self._launched_cloudmusic = False
             self._waiting_for_debug_ready = False
             self._debug_wait_started_at = 0.0
+            self._debug_target_stable_since = 0.0
+            self._last_seen_remote_target_id = ""
             self._warned_missing_debug_ready = False
             self._last_remote_target_id = ""
             self._stop_tasklyric()
@@ -471,6 +558,7 @@ def run(argv: Iterable[str] | None = None) -> None:
     parser.add_argument("--poll-interval", type=float, default=DEFAULT_POLL_INTERVAL_SECONDS)
     parser.add_argument("--launch-cloudmusic", action="store_true", help="Launch NetEase Cloud Music with the remote debug port before starting TaskLyric.")
     parser.add_argument("--restart-cloudmusic-with-debug", action=argparse.BooleanOptionalAction, default=False, help="If Cloud Music is already running without a remote debug port, restart it with the debug port so exact sync and taskbar controls work.")
+    parser.add_argument("--replace-existing", action="store_true", help="Internal flag: replace existing launcher and TaskLyric background processes before starting.")
     parser.add_argument("--stop", action="store_true", help="Stop the existing TaskLyric launcher and background TaskLyric process.")
     args = parser.parse_args(list(argv) if argv is not None else None)
 
@@ -478,7 +566,7 @@ def run(argv: Iterable[str] | None = None) -> None:
         stop_existing_launcher()
         return
 
-    if args.launch_cloudmusic or args.restart_cloudmusic_with_debug:
+    if args.launch_cloudmusic or args.restart_cloudmusic_with_debug or args.replace_existing:
         if stop_existing_launcher():
             _append_log("replacing existing launcher instance for an explicit launch request")
             time.sleep(1.0)
