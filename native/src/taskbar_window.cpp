@@ -24,6 +24,7 @@ namespace {
 constexpr wchar_t kWindowClassName[] = L"TaskLyric.TaskbarWindow";
 constexpr UINT kRefreshMessage = WM_APP + 1;
 constexpr UINT_PTR kLayoutTimerId = 1;
+constexpr ULONGLONG kRecoveryDelayMs = 2500;
 constexpr int kPreferredWidth = 560;
 constexpr int kMinimumWidth = 220;
 constexpr int kFallbackHeight = 48;
@@ -407,18 +408,39 @@ LRESULT CALLBACK TaskbarWindow::window_proc(HWND hwnd, UINT message, WPARAM wpar
             self->session_locked_ = true;
             self->last_layout_ = {};
             self->last_layout_query_time_ = 0;
-            append_debug_line(L"window: session locked; keep rendering active");
+            self->renderer_reset_pending_ = true;
+            self->recovery_until_ms_ = GetTickCount64() + kRecoveryDelayMs;
+            append_debug_line(L"window: session locked; defer renderer recovery");
         } else if (wparam == WTS_SESSION_UNLOCK || wparam == WTS_SESSION_DESKTOP_READY) {
             self->session_locked_ = false;
             self->last_layout_ = {};
             self->cached_task_list_right_ = 160;
             self->last_layout_query_time_ = 0;
+            self->renderer_reset_pending_ = true;
+            self->recovery_until_ms_ = GetTickCount64() + kRecoveryDelayMs;
             if (self->hwnd_) {
                 ShowWindow(self->hwnd_, SW_SHOWNOACTIVATE);
             }
-            append_debug_line(L"window: session unlocked; layout cache reset");
+            append_debug_line(L"window: session unlocked; schedule renderer reset");
         }
         return 0;
+    }
+    case WM_POWERBROADCAST: {
+        std::scoped_lock lock(self->mutex_);
+        if (wparam == PBT_APMSUSPEND) {
+            self->session_locked_ = true;
+            self->renderer_reset_pending_ = true;
+            self->recovery_until_ms_ = GetTickCount64() + kRecoveryDelayMs;
+            append_debug_line(L"window: power suspend; defer renderer recovery");
+        } else if (wparam == PBT_APMRESUMEAUTOMATIC || wparam == PBT_APMRESUMESUSPEND) {
+            self->session_locked_ = false;
+            self->renderer_reset_pending_ = true;
+            self->recovery_until_ms_ = GetTickCount64() + kRecoveryDelayMs;
+            self->last_layout_ = {};
+            self->last_layout_query_time_ = 0;
+            append_debug_line(L"window: power resume; schedule renderer reset");
+        }
+        return TRUE;
     }
     case kRefreshMessage:
         self->refresh_window();
@@ -500,6 +522,9 @@ void TaskbarWindow::thread_main() {
         last_layout_ = {};
         cached_task_list_right_ = 160;
         last_layout_query_time_ = 0;
+        session_locked_ = false;
+        renderer_reset_pending_ = false;
+        recovery_until_ms_ = 0;
         // UIA locator is intentionally disabled in runtime path to avoid Explorer hangs after Win+L.
     }
 
@@ -550,6 +575,9 @@ void TaskbarWindow::thread_main() {
         last_layout_ = {};
         cached_task_list_right_ = 160;
         last_layout_query_time_ = 0;
+        session_locked_ = false;
+        renderer_reset_pending_ = false;
+        recovery_until_ms_ = 0;
     }
 
     UnregisterClassW(kWindowClassName, module);
@@ -691,6 +719,24 @@ void TaskbarWindow::apply_window_rect(const RECT& screen_rect) {
 }
 
 void TaskbarWindow::refresh_window() {
+    {
+        std::scoped_lock lock(mutex_);
+        const ULONGLONG now = GetTickCount64();
+        if (now < recovery_until_ms_) {
+            return;
+        }
+        if (renderer_reset_pending_) {
+            if (renderer_) {
+                renderer_->shutdown();
+            }
+            renderer_ = std::make_unique<TaskbarDCompRenderer>();
+            composition_ready_ = false;
+            composition_attempted_ = false;
+            renderer_reset_pending_ = false;
+            append_debug_line(L"window: renderer reset completed");
+        }
+    }
+
     RECT screen_rect{};
     {
         std::scoped_lock lock(mutex_);

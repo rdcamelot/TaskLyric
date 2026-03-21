@@ -109,6 +109,8 @@ private:
     bool tracking_mouse_leave_ = false;
     bool session_locked_ = false;
     bool session_notifications_registered_ = false;
+    bool renderer_reset_pending_ = false;
+    ULONGLONG recovery_until_ms_ = 0;
     UINT window_width_ = 0;
     UINT window_height_ = 0;
     TaskbarConfig config_{};
