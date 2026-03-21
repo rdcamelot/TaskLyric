@@ -816,6 +816,10 @@ void TaskbarWindow::paint_locked(HDC hdc) {
 }
 
 TaskbarControlAction TaskbarWindow::hit_test_control_locked(POINT point) const {
+    if (!config_.enable_controls) {
+        return TaskbarControlAction::none;
+    }
+
     const TaskbarControlLayout layout = compute_taskbar_control_layout(window_width_, window_height_);
     if (!layout.visible) {
         return TaskbarControlAction::none;

@@ -142,7 +142,7 @@ $targets = $targets | Select-Object -Unique
 
 $desktopMode = $targets -contains [Environment]::GetFolderPath('Desktop')
 $startupMode = $targets -contains [Environment]::GetFolderPath('Startup')
-$shouldLaunchCloudMusic = $LaunchCloudMusic.IsPresent -or ($desktopMode -and -not $Startup)
+$shouldLaunchCloudMusic = $LaunchCloudMusic.IsPresent
 $shouldRestartWithDebug = $RestartCloudMusicWithDebug.IsPresent -or $shouldLaunchCloudMusic -or $startupMode
 
 $arguments = @($launcherCommand.Arguments)
@@ -176,10 +176,17 @@ if ($ReplaceCloudMusicShortcut) {
     if (-not $shortcutTargets) {
         Write-Warning 'No Cloud Music shortcut was found to replace.'
     }
+    if (-not $cloudMusicExe) {
+        Write-Warning 'Cloud Music executable was not found; cannot replace Cloud Music shortcuts.'
+    }
+    $cloudMusicArguments = @("--remote-debugging-port=$Port")
     foreach ($shortcutFile in $shortcutTargets) {
+        if (-not $cloudMusicExe) {
+            continue
+        }
         Backup-ShortcutIfNeeded -LinkPath $shortcutFile.FullName
         try {
-            Set-Shortcut -LinkPath $shortcutFile.FullName -TargetPath $launcherCommand.TargetPath -Arguments $arguments -WorkingDirectory $root -IconLocation $cloudMusicIcon -Description 'Launch NetEase Cloud Music with TaskLyric.'
+            Set-Shortcut -LinkPath $shortcutFile.FullName -TargetPath $cloudMusicExe -Arguments $cloudMusicArguments -WorkingDirectory (Split-Path -Parent $cloudMusicExe) -IconLocation $cloudMusicIcon -Description 'Launch NetEase Cloud Music with remote debug port for TaskLyric.'
             Write-Host "Replaced shortcut target: $($shortcutFile.FullName)"
         } catch {
             Write-Warning "Failed to replace shortcut due to permissions: $($shortcutFile.FullName)"

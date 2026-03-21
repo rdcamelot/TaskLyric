@@ -9,7 +9,8 @@
     subColor: "#AEB8C5",
     shadowColor: "#05070B",
     themeMode: "auto",
-    align: "center"
+    align: "center",
+    enableControls: false
   };
 
   var LOADING_TEXT = "\u6b4c\u8bcd\u52a0\u8f7d\u4e2d";

@@ -22,6 +22,7 @@ struct TaskbarConfig {
     COLORREF shadow_color = RGB(5, 7, 11);
     std::wstring theme_mode = L"auto";
     std::wstring align = L"center";
+    bool enable_controls = false;
     bool debug_fill = false;
     COLORREF debug_fill_color = RGB(156, 255, 46);
     COLORREF debug_border_color = RGB(255, 59, 48);

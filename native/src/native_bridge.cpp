@@ -235,6 +235,9 @@ TaskbarConfig parse_config_payload(std::wstring_view payload_json) {
     if (const auto value = extract_json_string(payload_json, L"align")) {
         config.align = *value;
     }
+    if (const auto value = extract_json_bool(payload_json, L"enableControls")) {
+        config.enable_controls = *value;
+    }
     if (const auto value = extract_json_bool(payload_json, L"debugFill")) {
         config.debug_fill = *value;
     }

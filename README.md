@@ -116,7 +116,15 @@ Create a product-style desktop launcher shortcut:
 powershell -ExecutionPolicy Bypass -File scripts\install_tasklyric_shortcut.ps1 -Desktop -CleanupLegacyShortcuts
 ```
 
-This creates `TaskLyric Launcher.lnk`. Double-clicking it launches NetEase Cloud Music in the correct debug-enabled mode and then starts TaskLyric without opening a terminal.
+This creates `TaskLyric Launcher.lnk`. Double-clicking it starts the TaskLyric watcher without opening a terminal.
+
+Current behavior: `TaskLyric Launcher.lnk` starts the TaskLyric watcher only. It does not force-launch Cloud Music unless you explicitly install it with `-LaunchCloudMusic`.
+
+If you want one-click launch (Cloud Music + TaskLyric), recreate desktop shortcut with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install_tasklyric_shortcut.ps1 -Desktop -LaunchCloudMusic -CleanupLegacyShortcuts
+```
 
 Install a Startup shortcut so TaskLyric watches Cloud Music automatically after you sign in:
 
@@ -126,13 +134,13 @@ powershell -ExecutionPolicy Bypass -File scripts\install_tasklyric_shortcut.ps1 
 
 This creates `TaskLyric Background.lnk` in the Startup folder. It watches `cloudmusic.exe`, starts TaskLyric only when NetEase Cloud Music is running, and stops it after Cloud Music exits.
 
-If you want your existing Cloud Music shortcuts to open through TaskLyric as well, replace those shortcuts only:
+If you want your existing Cloud Music shortcuts (including pinned Taskbar shortcuts) to always start Cloud Music with a remote debug port, replace those shortcuts only:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\install_tasklyric_shortcut.ps1 -Desktop -ReplaceCloudMusicShortcut
 ```
 
-This does not modify `cloudmusic.exe` itself. It only rewrites matching `.lnk` shortcuts and keeps backups with a `.tasklyric-backup` suffix. You can restore them with:
+This does not modify `cloudmusic.exe` itself. It rewrites matching `.lnk` shortcuts to launch `cloudmusic.exe --remote-debugging-port=9222`, and keeps backups with a `.tasklyric-backup` suffix. You can restore them with:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\restore_cloudmusic_shortcuts.ps1

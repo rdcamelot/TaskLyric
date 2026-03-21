@@ -413,6 +413,13 @@ class TaskLyricBackgroundLauncher:
     def _tick(self) -> None:
         now = time.monotonic()
         running = is_cloudmusic_running()
+
+        # launch_cloudmusic is a one-shot bootstrap behavior.
+        # If Cloud Music is already running when launcher starts, treat launch as completed
+        # so closing Cloud Music later does not trigger an unexpected relaunch.
+        if self.launch_cloudmusic and running and not self._launched_cloudmusic:
+            self._launched_cloudmusic = True
+
         target_id = remote_debug_target_id(self.remote_debug_port) if self.remote_debug_port > 0 else ""
         debug_target_seen = bool(target_id)
         if debug_target_seen:
@@ -499,7 +506,6 @@ class TaskLyricBackgroundLauncher:
             self._warned_missing_debug_ready = False
             self._ensure_tasklyric_running()
         else:
-            self._launched_cloudmusic = False
             self._waiting_for_debug_ready = False
             self._debug_wait_started_at = 0.0
             self._debug_target_stable_since = 0.0
