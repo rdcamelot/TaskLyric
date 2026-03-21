@@ -27,7 +27,7 @@ public:
     TaskbarLocator& operator=(const TaskbarLocator&) = delete;
 
     bool initialize(HWND taskbar_hwnd);
-    TaskbarLayout query();
+    TaskbarLayout query() const;
     void shutdown();
 
 private:

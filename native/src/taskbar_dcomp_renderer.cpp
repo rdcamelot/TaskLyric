@@ -370,7 +370,7 @@ bool TaskbarDCompRenderer::resize(UINT width, UINT height) {
     return true;
 }
 
-bool TaskbarDCompRenderer::render(const TaskbarConfig& config, const TaskbarLyricState& state, const TaskbarWindowUiState& ui_state, UINT width, UINT height) {
+bool TaskbarDCompRenderer::render(const TaskbarConfig& config, const TaskbarLyricState& state, const TaskbarWindowUiState& ui_state, UINT width, UINT height, UINT task_list_right) {
     if (!ready_ || !resize(width, height) || !target_bitmap_) {
         return false;
     }
@@ -411,7 +411,7 @@ bool TaskbarDCompRenderer::render(const TaskbarConfig& config, const TaskbarLyri
     const FLOAT sub_font_size = static_cast<FLOAT>(std::max(12, config.font_size - 5));
     const float width_f = static_cast<float>(width);
     const float height_f = static_cast<float>(height);
-    const TaskbarControlLayout control_layout = compute_taskbar_control_layout(width, height);
+    const TaskbarControlLayout control_layout = compute_taskbar_control_layout(width, height, task_list_right);
     const float card_inset_x = debug_mode ? 0.0f : 8.0f;
     const float card_inset_y = debug_mode ? 0.0f : 7.0f;
     const float card_radius = debug_mode ? 0.0f : 14.0f;

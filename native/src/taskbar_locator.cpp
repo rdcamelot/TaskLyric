@@ -290,7 +290,7 @@ bool TaskbarLocator::initialize(HWND taskbar_hwnd) {
     return true;
 }
 
-TaskbarLayout TaskbarLocator::query() {
+TaskbarLayout TaskbarLocator::query() const {
     TaskbarLayout layout;
     if (!impl_ || !impl_->taskbar_hwnd || !IsWindow(impl_->taskbar_hwnd) || !impl_->automation) {
         layout.source = L"locator-unavailable";

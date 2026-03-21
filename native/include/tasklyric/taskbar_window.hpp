@@ -58,7 +58,7 @@ struct TaskbarControlLayout {
     RECT text_rect{};
 };
 
-TaskbarControlLayout compute_taskbar_control_layout(UINT width, UINT height);
+TaskbarControlLayout compute_taskbar_control_layout(UINT width, UINT height, UINT task_list_right = 160);
 std::wstring_view taskbar_control_action_name(TaskbarControlAction action);
 
 class TaskbarWindow {
@@ -82,11 +82,13 @@ private:
     void thread_main();
     void ensure_fonts_locked();
     void destroy_fonts_locked();
+    void ensure_taskbar_parent_locked();
     bool compute_target_rect_locked(RECT* screen_rect);
     void apply_window_rect(const RECT& screen_rect);
     void refresh_window();
     bool render_with_composition_locked();
     void paint_locked(HDC hdc);
+    void update_task_list_right_if_needed_locked();
     TaskbarControlAction hit_test_control_locked(POINT point) const;
     void set_hot_action_locked(TaskbarControlAction action);
     void set_pressed_action_locked(TaskbarControlAction action);
@@ -105,6 +107,8 @@ private:
     bool composition_ready_ = false;
     bool composition_attempted_ = false;
     bool tracking_mouse_leave_ = false;
+    bool session_locked_ = false;
+    bool session_notifications_registered_ = false;
     UINT window_width_ = 0;
     UINT window_height_ = 0;
     TaskbarConfig config_{};
@@ -114,6 +118,8 @@ private:
     TaskbarLayout last_layout_{};
     HFONT main_font_ = nullptr;
     HFONT sub_font_ = nullptr;
+    UINT cached_task_list_right_ = 160;
+    ULONGLONG last_layout_query_time_ = 0;
     TaskbarLocator locator_{};
     std::unique_ptr<TaskbarDCompRenderer> renderer_;
 };

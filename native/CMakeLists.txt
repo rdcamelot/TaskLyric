@@ -21,6 +21,7 @@ target_link_libraries(tasklyric_native
     ole32
     oleaut32
     user32
+    wtsapi32
 )
 
 target_compile_definitions(tasklyric_native

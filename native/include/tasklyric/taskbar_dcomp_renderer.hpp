@@ -25,7 +25,7 @@ public:
     bool initialize(HWND hwnd);
     void shutdown();
     bool resize(UINT width, UINT height);
-    bool render(const TaskbarConfig& config, const TaskbarLyricState& state, const TaskbarWindowUiState& ui_state, UINT width, UINT height);
+    bool render(const TaskbarConfig& config, const TaskbarLyricState& state, const TaskbarWindowUiState& ui_state, UINT width, UINT height, UINT task_list_right = 160);
     bool is_ready() const { return ready_; }
     std::wstring snapshot_json() const;
 
