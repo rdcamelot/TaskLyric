@@ -20,10 +20,13 @@ CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 ERROR_ALREADY_EXISTS = 183
 MUTEX_NAME = "Local\\TaskLyricLauncherSingleton"
 LAUNCHER_STATE_PATH = ROOT / "state" / "launcher-state.json"
+LAST_NATIVE_UPDATE_PATH = ROOT / "state" / "last-native-update.json"
 DEBUG_READY_GRACE_SECONDS = 18.0
 DEBUG_TARGET_STABLE_SECONDS = 10.0
 RESTART_COOLDOWN_SECONDS = 30.0
 CLOUDMUSIC_STOP_TIMEOUT_SECONDS = 10.0
+NATIVE_STALE_SECONDS_PLAYING = 18.0
+NATIVE_STALE_SECONDS_IDLE = 45.0
 
 
 def _append_log(message: str) -> None:
@@ -57,6 +60,22 @@ def _remove_launcher_state() -> None:
         LAUNCHER_STATE_PATH.unlink(missing_ok=True)
     except OSError:
         return
+
+
+def _read_native_update() -> dict[str, object] | None:
+    try:
+        data = json.loads(LAST_NATIVE_UPDATE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _native_update_age_seconds(now_wall: float) -> float | None:
+    try:
+        modified_at = LAST_NATIVE_UPDATE_PATH.stat().st_mtime
+    except OSError:
+        return None
+    return max(0.0, now_wall - modified_at)
 
 
 def _pid_exists(pid: int) -> bool:
@@ -369,6 +388,7 @@ class TaskLyricBackgroundLauncher:
         self._warned_missing_debug_ready = False
         self._should_exit = False
         self._handoff_arguments: list[str] | None = None
+        self._last_stall_recovery_at = 0.0
 
     def _schedule_launcher_handoff(self, *, launch_cloudmusic: bool, restart_with_debug: bool, reason: str) -> None:
         if self._handoff_arguments is not None:
@@ -412,6 +432,7 @@ class TaskLyricBackgroundLauncher:
 
     def _tick(self) -> None:
         now = time.monotonic()
+        now_wall = time.time()
         running = is_cloudmusic_running()
 
         # launch_cloudmusic is a one-shot bootstrap behavior.
@@ -500,11 +521,13 @@ class TaskLyricBackgroundLauncher:
             self._warned_missing_debug_ready = False
             self._last_remote_target_id = target_id
             self._ensure_tasklyric_running()
+            self._recover_if_native_stalled(now=now, now_wall=now_wall)
             return
 
         if running:
             self._warned_missing_debug_ready = False
             self._ensure_tasklyric_running()
+            self._recover_if_native_stalled(now=now, now_wall=now_wall)
         else:
             self._waiting_for_debug_ready = False
             self._debug_wait_started_at = 0.0
@@ -513,6 +536,37 @@ class TaskLyricBackgroundLauncher:
             self._warned_missing_debug_ready = False
             self._last_remote_target_id = ""
             self._stop_tasklyric()
+
+    def _recover_if_native_stalled(self, *, now: float, now_wall: float) -> None:
+        process = self._tasklyric_process
+        if process is None or process.poll() is not None:
+            return
+
+        age = _native_update_age_seconds(now_wall)
+        if age is None:
+            return
+
+        payload = _read_native_update() or {}
+        playback_state = str(payload.get("playbackState") or "").strip().lower()
+        stale_limit = NATIVE_STALE_SECONDS_PLAYING
+        if playback_state in {"paused", "stopped", "unknown", ""}:
+            stale_limit = NATIVE_STALE_SECONDS_IDLE
+
+        if age < stale_limit:
+            return
+
+        if now - self._last_stall_recovery_at < RESTART_COOLDOWN_SECONDS:
+            return
+
+        self._last_stall_recovery_at = now
+        _append_log(
+            f"native updates stale for {age:.1f}s (state={playback_state or 'unknown'}); restarting tasklyric"
+        )
+        self._stop_tasklyric()
+        self._last_remote_target_id = ""
+        self._waiting_for_debug_ready = False
+        self._debug_wait_started_at = 0.0
+        self._ensure_tasklyric_running()
 
     def _ensure_tasklyric_running(self) -> None:
         process = self._tasklyric_process

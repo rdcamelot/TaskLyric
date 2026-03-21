@@ -33,7 +33,7 @@ constexpr int kPaddingY = 6;
 constexpr int kAnchorGap = 6;
 constexpr int kControlButtonSize = 24;
 constexpr int kControlButtonGap = 5;
-constexpr int kControlHitPadding = 5;
+constexpr int kControlHitPadding = 1;
 constexpr int kControlRightInset = 16;
 constexpr int kControlMinWidth = 360;
 constexpr int kControlTextGap = 12;
@@ -722,10 +722,7 @@ void TaskbarWindow::refresh_window() {
     {
         std::scoped_lock lock(mutex_);
         const ULONGLONG now = GetTickCount64();
-        if (now < recovery_until_ms_) {
-            return;
-        }
-        if (renderer_reset_pending_) {
+        if (renderer_reset_pending_ && now >= recovery_until_ms_) {
             if (renderer_) {
                 renderer_->shutdown();
             }
