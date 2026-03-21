@@ -95,12 +95,15 @@ def _stop_pid(pid: int) -> bool:
     return completed.returncode == 0
 
 
-def _stop_tasklyric_python_processes() -> bool:
+def _stop_tasklyric_python_processes(*, include_launcher: bool) -> bool:
+    predicates = ["$_.CommandLine -like '*TaskLyric*main.py*'"]
+    if include_launcher:
+        predicates.append("$_.CommandLine -like '*TaskLyric*launcher.pyw*'")
+    predicate = " -or ".join(predicates)
     command = (
         "Get-CimInstance Win32_Process | "
         "Where-Object { ($_.Name -ieq 'pythonw.exe' -or $_.Name -ieq 'python.exe') -and $_.CommandLine -and ("
-        "$_.CommandLine -like '*TaskLyric*main.py*' -or "
-        "$_.CommandLine -like '*TaskLyric*launcher.pyw*') } | "
+        f"{predicate}) }} | "
         "Select-Object -ExpandProperty ProcessId | ConvertTo-Json -Compress"
     )
     payload = _powershell_json(command)
@@ -118,7 +121,7 @@ def _stop_tasklyric_python_processes() -> bool:
     return stopped
 
 
-def stop_existing_launcher() -> bool:
+def stop_existing_launcher(*, include_launcher: bool = True) -> bool:
     state = _read_launcher_state() or {}
     child_pid = int(state.get("tasklyricPid") or 0)
     launcher_pid = int(state.get("launcherPid") or 0)
@@ -127,14 +130,18 @@ def stop_existing_launcher() -> bool:
         _append_log(f"external stop requested for tasklyric pid={child_pid}")
         _stop_pid(child_pid)
         stopped = True
-    if launcher_pid and _pid_exists(launcher_pid):
+    if include_launcher and launcher_pid and _pid_exists(launcher_pid):
         _append_log(f"external stop requested for launcher pid={launcher_pid}")
         _stop_pid(launcher_pid)
         stopped = True
-    if _stop_tasklyric_python_processes():
-        _append_log("external stop requested for residual TaskLyric python processes")
+    if _stop_tasklyric_python_processes(include_launcher=include_launcher):
+        if include_launcher:
+            _append_log("external stop requested for residual TaskLyric python processes")
+        else:
+            _append_log("external stop requested for residual TaskLyric main.py processes")
         stopped = True
-    _remove_launcher_state()
+    if include_launcher:
+        _remove_launcher_state()
     return stopped
 
 
@@ -429,9 +436,6 @@ class TaskLyricBackgroundLauncher:
                 return
 
         if running and not debug_ready:
-            self._stop_tasklyric()
-            self._last_remote_target_id = ""
-
             if debug_target_seen and not debug_target_stable:
                 if not self._warned_missing_debug_ready:
                     _append_log(
@@ -445,7 +449,7 @@ class TaskLyricBackgroundLauncher:
 
             if self.restart_with_debug:
                 if not self._waiting_for_debug_ready:
-                    _append_log(f"waiting for remote debug port {self.remote_debug_port} to become ready")
+                    _append_log(f"waiting for remote debug port {self.remote_debug_port} to become ready; will wait indefinitely for user to start cloudmusic")
                     self._waiting_for_debug_ready = True
                     self._debug_wait_started_at = now
                 elif self._debug_wait_started_at <= 0.0:
@@ -454,19 +458,14 @@ class TaskLyricBackgroundLauncher:
                 if now - self._debug_wait_started_at < DEBUG_READY_GRACE_SECONDS:
                     return
 
-                if now - self._last_restart_attempt < RESTART_COOLDOWN_SECONDS:
-                    return
+                if not self._warned_missing_debug_ready:
+                    _append_log(
+                        f"remote debug port {self.remote_debug_port} is still unavailable after grace period; starting tasklyric in fallback mode"
+                    )
+                    self._warned_missing_debug_ready = True
 
-                self._last_restart_attempt = now
-                _append_log(
-                    f"remote debug port {self.remote_debug_port} unavailable after grace period; restarting cloudmusic with a fresh launcher handoff"
-                )
-                stop_cloudmusic()
-                self._schedule_launcher_handoff(
-                    launch_cloudmusic=True,
-                    restart_with_debug=True,
-                    reason=f"cloudmusic must be relaunched with debug port {self.remote_debug_port}",
-                )
+                self._last_remote_target_id = ""
+                self._ensure_tasklyric_running()
                 return
 
             if not self._warned_missing_debug_ready:
@@ -474,6 +473,8 @@ class TaskLyricBackgroundLauncher:
                     f"cloudmusic is running but remote debug port {self.remote_debug_port} is not ready; waiting without starting tasklyric"
                 )
                 self._warned_missing_debug_ready = True
+            self._stop_tasklyric()
+            self._last_remote_target_id = ""
             self._waiting_for_debug_ready = False
             self._debug_wait_started_at = 0.0
             return
@@ -559,11 +560,16 @@ def run(argv: Iterable[str] | None = None) -> None:
     parser.add_argument("--launch-cloudmusic", action="store_true", help="Launch NetEase Cloud Music with the remote debug port before starting TaskLyric.")
     parser.add_argument("--restart-cloudmusic-with-debug", action=argparse.BooleanOptionalAction, default=False, help="If Cloud Music is already running without a remote debug port, restart it with the debug port so exact sync and taskbar controls work.")
     parser.add_argument("--replace-existing", action="store_true", help="Internal flag: replace existing launcher and TaskLyric background processes before starting.")
-    parser.add_argument("--stop", action="store_true", help="Stop the existing TaskLyric launcher and background TaskLyric process.")
+    parser.add_argument("--stop", action="store_true", help="Stop only the background TaskLyric process (main.py), keep the launcher watcher alive.")
+    parser.add_argument("--stop-all", action="store_true", help="Stop both the launcher watcher and background TaskLyric process.")
     args = parser.parse_args(list(argv) if argv is not None else None)
 
+    if args.stop_all:
+        stop_existing_launcher(include_launcher=True)
+        return
+
     if args.stop:
-        stop_existing_launcher()
+        stop_existing_launcher(include_launcher=False)
         return
 
     if args.launch_cloudmusic or args.restart_cloudmusic_with_debug or args.replace_existing:

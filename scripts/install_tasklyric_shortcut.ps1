@@ -86,7 +86,8 @@ function Get-CloudMusicShortcutCandidates {
     $desktop = [Environment]::GetFolderPath('Desktop')
     $startMenuUser = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'
     $startMenuCommon = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs'
-    $roots = @($desktop, $startMenuUser, $startMenuCommon) | Where-Object { $_ -and (Test-Path $_) }
+    $taskbarPinned = Join-Path $env:APPDATA 'Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar'
+    $roots = @($desktop, $startMenuUser, $startMenuCommon, $taskbarPinned) | Where-Object { $_ -and (Test-Path $_) }
     $patterns = @('*网易云*.lnk', '*CloudMusic*.lnk', '*NetEase*Music*.lnk')
     $results = @()
     foreach ($rootPath in $roots | Select-Object -Unique) {
@@ -94,14 +95,32 @@ function Get-CloudMusicShortcutCandidates {
             $results += Get-ChildItem -Path $rootPath -Filter $pattern -Recurse -ErrorAction SilentlyContinue
         }
     }
-    return $results | Sort-Object FullName -Unique
+    $shell = New-Object -ComObject WScript.Shell
+    $filtered = foreach ($item in ($results | Sort-Object FullName -Unique)) {
+        $name = $item.Name
+        if ($name -match '卸载|Uninstall') {
+            continue
+        }
+        $shortcut = $shell.CreateShortcut($item.FullName)
+        $target = [string]$shortcut.TargetPath
+        $targetLower = $target.ToLowerInvariant()
+        $nameLower = $name.ToLowerInvariant()
+        if ($targetLower -like '*cloudmusic.exe' -or $nameLower -like '*cloudmusic*' -or $name -like '*网易云*') {
+            $item
+        }
+    }
+    return $filtered | Sort-Object FullName -Unique
 }
 
 function Backup-ShortcutIfNeeded {
     param([string]$LinkPath)
     $backupPath = "$LinkPath.tasklyric-backup"
     if ((Test-Path $LinkPath) -and -not (Test-Path $backupPath)) {
-        Copy-Item -LiteralPath $LinkPath -Destination $backupPath -Force
+        try {
+            Copy-Item -LiteralPath $LinkPath -Destination $backupPath -Force -ErrorAction Stop
+        } catch {
+            Write-Warning "Backup skipped due to permissions: $LinkPath"
+        }
     }
 }
 
@@ -122,8 +141,9 @@ if ($targets.Count -eq 0) {
 $targets = $targets | Select-Object -Unique
 
 $desktopMode = $targets -contains [Environment]::GetFolderPath('Desktop')
+$startupMode = $targets -contains [Environment]::GetFolderPath('Startup')
 $shouldLaunchCloudMusic = $LaunchCloudMusic.IsPresent -or ($desktopMode -and -not $Startup)
-$shouldRestartWithDebug = $RestartCloudMusicWithDebug.IsPresent -or $shouldLaunchCloudMusic
+$shouldRestartWithDebug = $RestartCloudMusicWithDebug.IsPresent -or $shouldLaunchCloudMusic -or $startupMode
 
 $arguments = @($launcherCommand.Arguments)
 if ($shouldLaunchCloudMusic) {
@@ -158,7 +178,11 @@ if ($ReplaceCloudMusicShortcut) {
     }
     foreach ($shortcutFile in $shortcutTargets) {
         Backup-ShortcutIfNeeded -LinkPath $shortcutFile.FullName
-        Set-Shortcut -LinkPath $shortcutFile.FullName -TargetPath $launcherCommand.TargetPath -Arguments $arguments -WorkingDirectory $root -IconLocation $cloudMusicIcon -Description 'Launch NetEase Cloud Music with TaskLyric.'
-        Write-Host "Replaced shortcut target: $($shortcutFile.FullName)"
+        try {
+            Set-Shortcut -LinkPath $shortcutFile.FullName -TargetPath $launcherCommand.TargetPath -Arguments $arguments -WorkingDirectory $root -IconLocation $cloudMusicIcon -Description 'Launch NetEase Cloud Music with TaskLyric.'
+            Write-Host "Replaced shortcut target: $($shortcutFile.FullName)"
+        } catch {
+            Write-Warning "Failed to replace shortcut due to permissions: $($shortcutFile.FullName)"
+        }
     }
 }

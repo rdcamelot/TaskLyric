@@ -76,7 +76,14 @@ python main.py --remote-debug-port 9222
 Run TaskLyric in the background without opening a terminal window:
 
 ```powershell
-build-tasklyric\launcher\tasklyric_launcher.exe --remote-debug-port 9222
+.\build-tasklyric\launcher\tasklyric_launcher.exe --remote-debug-port 9222
+```
+
+If PowerShell says `tasklyric_launcher.exe` is not recognized, use one of these forms instead:
+
+```powershell
+.\build-tasklyric\launcher\tasklyric_launcher.exe --remote-debug-port 9222 --restart-cloudmusic-with-debug
+D:\code\TaskLyric\build-tasklyric\launcher\tasklyric_launcher.exe --remote-debug-port 9222 --restart-cloudmusic-with-debug
 ```
 
 This safer default no longer restarts a manually opened Cloud Music instance. TaskLyric will start only after the remote-debug target is actually ready.
@@ -87,11 +94,19 @@ If you explicitly want TaskLyric to restart Cloud Music into debug mode for exac
 --restart-cloudmusic-with-debug
 ```
 
-Stop the existing background launcher and its TaskLyric child:
+Stop only the TaskLyric child process but keep the background launcher watcher alive:
 
 ```powershell
 python launcher.pyw --stop
 ```
+
+If you really want to stop both the watcher and TaskLyric, use:
+
+```powershell
+python launcher.pyw --stop-all
+```
+
+After `--stop-all`, automatic startup is disabled until you launch the watcher again (or sign out and sign back in so the Startup shortcut runs again).
 
 Launching `launcher.pyw` repeatedly is now safe: only one launcher instance will stay alive.
 
@@ -120,8 +135,10 @@ powershell -ExecutionPolicy Bypass -File scripts\install_tasklyric_shortcut.ps1 
 This does not modify `cloudmusic.exe` itself. It only rewrites matching `.lnk` shortcuts and keeps backups with a `.tasklyric-backup` suffix. You can restore them with:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scriptsestore_cloudmusic_shortcuts.ps1
+powershell -ExecutionPolicy Bypass -File scripts\restore_cloudmusic_shortcuts.ps1
 ```
+
+The replacement now also includes your pinned Taskbar Cloud Music shortcut under your user profile. If some Start Menu shortcuts are under `C:\ProgramData`, replacing those may require running PowerShell as administrator.
 
 Run the development end-to-end replay flow:
 
