@@ -91,6 +91,7 @@ private:
     void set_pressed_action_locked(TaskbarControlAction action);
     void queue_control_locked(TaskbarControlAction action);
     void track_mouse_leave();
+    void reset_renderer_locked(const wchar_t* reason);
     std::wstring snapshot_json_locked() const;
 
     mutable std::mutex mutex_;
@@ -111,6 +112,10 @@ private:
     TaskbarWindowUiState ui_state_{};
     std::wstring pending_command_json_;
     TaskbarLayout last_layout_{};
+    RECT target_screen_rect_{};
+    RECT animated_screen_rect_{};
+    bool layout_transition_active_ = false;
+    ULONGLONG last_animation_tick_ = 0;
     HFONT main_font_ = nullptr;
     HFONT sub_font_ = nullptr;
     TaskbarLocator locator_{};

@@ -6,6 +6,7 @@
 #include <windowsx.h>
 
 #include <algorithm>
+#include <cmath>
 #include <array>
 #include <filesystem>
 #include <fstream>
@@ -19,6 +20,9 @@ namespace {
 constexpr wchar_t kWindowClassName[] = L"TaskLyric.TaskbarWindow";
 constexpr UINT kRefreshMessage = WM_APP + 1;
 constexpr UINT_PTR kLayoutTimerId = 1;
+constexpr UINT kLayoutTimerIntervalMs = 33;
+constexpr double kLayoutAnimationTimeConstantMs = 110.0;
+constexpr int kRectAnimationSnapPx = 1;
 constexpr int kPreferredWidth = 560;
 constexpr int kMinimumWidth = 220;
 constexpr int kFallbackHeight = 48;
@@ -166,6 +170,39 @@ bool rects_intersect(const RECT& left, const RECT& right) {
 
     RECT intersection{};
     return IntersectRect(&intersection, &left, &right) == TRUE;
+}
+
+int rect_width(const RECT& rect) {
+    return std::max(0, static_cast<int>(rect.right - rect.left));
+}
+
+int rect_height(const RECT& rect) {
+    return std::max(0, static_cast<int>(rect.bottom - rect.top));
+}
+
+bool same_rect(const RECT& left, const RECT& right) {
+    return left.left == right.left && left.top == right.top && left.right == right.right && left.bottom == right.bottom;
+}
+
+bool rect_is_close(const RECT& left, const RECT& right, int tolerance = kRectAnimationSnapPx) {
+    return std::abs(left.left - right.left) <= tolerance
+        && std::abs(left.top - right.top) <= tolerance
+        && std::abs(left.right - right.right) <= tolerance
+        && std::abs(left.bottom - right.bottom) <= tolerance;
+}
+
+LONG animate_coordinate(LONG current, LONG target, double alpha) {
+    const double blended = static_cast<double>(current) + (static_cast<double>(target) - static_cast<double>(current)) * alpha;
+    return static_cast<LONG>(std::lround(blended));
+}
+
+RECT animate_rect_towards(const RECT& current, const RECT& target, double alpha) {
+    RECT animated{};
+    animated.left = animate_coordinate(current.left, target.left, alpha);
+    animated.top = animate_coordinate(current.top, target.top, alpha);
+    animated.right = animate_coordinate(current.right, target.right, alpha);
+    animated.bottom = animate_coordinate(current.bottom, target.bottom, alpha);
+    return animated;
 }
 
 bool child_rect_in_parent(HWND parent, const wchar_t* class_name, RECT* rect) {
@@ -520,6 +557,10 @@ void TaskbarWindow::thread_main() {
         pending_command_json_.clear();
         tracking_mouse_leave_ = false;
         last_layout_ = {};
+        target_screen_rect_ = {};
+        animated_screen_rect_ = {};
+        layout_transition_active_ = false;
+        last_animation_tick_ = 0;
         if (attached_) {
             locator_.initialize(parent_hwnd_);
         }
@@ -539,7 +580,7 @@ void TaskbarWindow::thread_main() {
     }
 
     ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-    SetTimer(hwnd, kLayoutTimerId, 250, nullptr);
+    SetTimer(hwnd, kLayoutTimerId, kLayoutTimerIntervalMs, nullptr);
     refresh_window();
 
     MSG message{};
@@ -567,6 +608,10 @@ void TaskbarWindow::thread_main() {
         pending_command_json_.clear();
         tracking_mouse_leave_ = false;
         last_layout_ = {};
+        target_screen_rect_ = {};
+        animated_screen_rect_ = {};
+        layout_transition_active_ = false;
+        last_animation_tick_ = 0;
     }
 
     UnregisterClassW(kWindowClassName, module);
@@ -625,6 +670,19 @@ void TaskbarWindow::destroy_fonts_locked() {
         DeleteObject(sub_font_);
         sub_font_ = nullptr;
     }
+}
+
+void TaskbarWindow::reset_renderer_locked(const wchar_t* reason) {
+    if (!renderer_ || !composition_ready_) {
+        return;
+    }
+    if (reason && *reason) {
+        append_debug_line((std::wstring(L"renderer reset: ") + reason).c_str());
+    }
+    renderer_->shutdown();
+    renderer_ = std::make_unique<TaskbarDCompRenderer>();
+    composition_ready_ = false;
+    composition_attempted_ = false;
 }
 
 bool TaskbarWindow::compute_target_rect_locked(RECT* screen_rect) {
@@ -802,11 +860,7 @@ void TaskbarWindow::apply_window_rect(const RECT& screen_rect) {
         window_width_ = next_width;
         window_height_ = next_height;
         if (geometry_changed && renderer_ && composition_ready_) {
-            append_debug_line(L"layout change: resetting DComp renderer");
-            renderer_->shutdown();
-            renderer_ = std::make_unique<TaskbarDCompRenderer>();
-            composition_ready_ = false;
-            composition_attempted_ = false;
+            reset_renderer_locked(L"snap-layout-change");
         } else if (renderer_ && composition_ready_) {
             renderer_->resize(window_width_, window_height_);
         }
@@ -820,6 +874,14 @@ void TaskbarWindow::apply_window_rect(const RECT& screen_rect) {
 void TaskbarWindow::refresh_window() {
     RECT screen_rect{};
     compute_target_rect_locked(&screen_rect);
+
+    {
+        std::scoped_lock lock(mutex_);
+        target_screen_rect_ = screen_rect;
+        animated_screen_rect_ = screen_rect;
+        layout_transition_active_ = false;
+        last_animation_tick_ = GetTickCount64();
+    }
 
     if (is_valid_rect(screen_rect)) {
         apply_window_rect(screen_rect);

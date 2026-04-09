@@ -3,6 +3,7 @@
 #include "tasklyric/taskbar_window.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <sstream>
 
 namespace tasklyric::native {
@@ -70,6 +71,61 @@ D2D1_RECT_F to_d2d_rect(const RECT& rect) {
         static_cast<float>(rect.right),
         static_cast<float>(rect.bottom),
     };
+}
+
+float aligned_text_origin_x(std::wstring_view align, float left, float available_width, float content_width) {
+    if (align == L"right") {
+        return left + std::max(0.0f, available_width - content_width);
+    }
+    if (align == L"center") {
+        return left + std::max(0.0f, (available_width - content_width) * 0.5f);
+    }
+    return left;
+}
+
+float resolve_marquee_offset(
+    std::wstring_view text,
+    float content_width,
+    float available_width,
+    int progress_ms,
+    std::wstring* last_text,
+    int* anchor_progress_ms
+) {
+    if (!last_text || !anchor_progress_ms || text.empty() || content_width <= available_width + 1.0f) {
+        if (last_text) {
+            *last_text = std::wstring(text);
+        }
+        if (anchor_progress_ms) {
+            *anchor_progress_ms = progress_ms;
+        }
+        return 0.0f;
+    }
+
+    if (*last_text != text || progress_ms + 400 < *anchor_progress_ms) {
+        *last_text = std::wstring(text);
+        *anchor_progress_ms = progress_ms;
+        return 0.0f;
+    }
+
+    const float overflow = std::max(0.0f, content_width - available_width);
+    if (overflow <= 1.0f) {
+        return 0.0f;
+    }
+
+    constexpr int kHoldStartMs = 700;
+    constexpr int kHoldEndMs = 500;
+    constexpr float kScrollPixelsPerSecond = 42.0f;
+    const int scroll_ms = std::max(1, static_cast<int>(std::ceil((overflow / kScrollPixelsPerSecond) * 1000.0f)));
+    const int cycle_ms = kHoldStartMs + scroll_ms + kHoldEndMs;
+    const int elapsed_ms = std::max(0, progress_ms - *anchor_progress_ms);
+    const int cycle_pos = cycle_ms > 0 ? (elapsed_ms % cycle_ms) : 0;
+    if (cycle_pos <= kHoldStartMs) {
+        return 0.0f;
+    }
+    if (cycle_pos >= kHoldStartMs + scroll_ms) {
+        return overflow;
+    }
+    return std::min(overflow, static_cast<float>(cycle_pos - kHoldStartMs) * kScrollPixelsPerSecond / 1000.0f);
 }
 
 constexpr wchar_t kThemePersonalizeKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize";
@@ -395,6 +451,10 @@ bool TaskbarDCompRenderer::render(const TaskbarConfig& config, const TaskbarLyri
     ID2D1SolidColorBrush* fill_brush = nullptr;
     ID2D1SolidColorBrush* border_brush = nullptr;
     IDWriteInlineObject* trimming_sign = nullptr;
+    IDWriteTextLayout* main_layout = nullptr;
+    IDWriteTextLayout* sub_layout = nullptr;
+    DWRITE_TEXT_METRICS main_metrics{};
+    DWRITE_TEXT_METRICS sub_metrics{};
 
     bool success = false;
     HRESULT hr = S_OK;
@@ -594,6 +654,59 @@ bool TaskbarDCompRenderer::render(const TaskbarConfig& config, const TaskbarLyri
             }
         }
 
+        const FLOAT main_available_width = std::max(1.0f, main_rect.right - main_rect.left);
+        const FLOAT sub_available_width = std::max(1.0f, sub_rect.right - sub_rect.left);
+        const FLOAT main_layout_width = std::max(4096.0f, main_available_width + 64.0f);
+        const FLOAT sub_layout_width = std::max(4096.0f, sub_available_width + 64.0f);
+        const FLOAT main_layout_height = std::max(20.0f, main_rect.bottom - main_rect.top + 4.0f);
+        const FLOAT sub_layout_height = std::max(18.0f, sub_rect.bottom - sub_rect.top + 4.0f);
+        const bool main_text_present = !main_text.empty();
+        const bool sub_text_present = has_sub_text && !sub_text.empty();
+
+        if (main_text_present) {
+            hr = dwrite_factory_->CreateTextLayout(
+                main_text.c_str(),
+                static_cast<UINT32>(main_text.size()),
+                main_format,
+                main_layout_width,
+                main_layout_height,
+                &main_layout
+            );
+            if (FAILED(hr)) {
+                set_failure(L"CreateTextLayout(main)", hr);
+                break;
+            }
+            main_layout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+            main_layout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+            hr = main_layout->GetMetrics(&main_metrics);
+            if (FAILED(hr)) {
+                set_failure(L"GetMetrics(main)", hr);
+                break;
+            }
+        }
+
+        if (sub_text_present) {
+            hr = dwrite_factory_->CreateTextLayout(
+                sub_text.c_str(),
+                static_cast<UINT32>(sub_text.size()),
+                sub_format,
+                sub_layout_width,
+                sub_layout_height,
+                &sub_layout
+            );
+            if (FAILED(hr)) {
+                set_failure(L"CreateTextLayout(sub)", hr);
+                break;
+            }
+            sub_layout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+            sub_layout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+            hr = sub_layout->GetMetrics(&sub_metrics);
+            if (FAILED(hr)) {
+                set_failure(L"GetMetrics(sub)", hr);
+                break;
+            }
+        }
+
         d2d_context_->SetTarget(target_bitmap_);
         d2d_context_->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
         d2d_context_->BeginDraw();
@@ -610,63 +723,54 @@ bool TaskbarDCompRenderer::render(const TaskbarConfig& config, const TaskbarLyri
             d2d_context_->DrawLine(bottom_edge_start, bottom_edge_end, glass_bottom_edge_brush, 1.0f, nullptr);
         }
 
-        if (!main_text.empty()) {
-            d2d_context_->DrawText(
-                main_text.c_str(),
-                static_cast<UINT32>(main_text.size()),
-                main_format,
-                &main_glow,
-                glow_brush,
-                D2D1_DRAW_TEXT_OPTIONS_CLIP,
-                DWRITE_MEASURING_MODE_NATURAL
-            );
-            d2d_context_->DrawText(
-                main_text.c_str(),
-                static_cast<UINT32>(main_text.size()),
-                main_format,
-                &main_shadow,
-                shadow_brush,
-                D2D1_DRAW_TEXT_OPTIONS_CLIP,
-                DWRITE_MEASURING_MODE_NATURAL
-            );
-            d2d_context_->DrawText(
-                main_text.c_str(),
-                static_cast<UINT32>(main_text.size()),
-                main_format,
-                &main_rect,
-                main_brush,
-                D2D1_DRAW_TEXT_OPTIONS_CLIP,
-                DWRITE_MEASURING_MODE_NATURAL
-            );
-        }
+        const auto draw_text_layout_with_motion = [&](IDWriteTextLayout* layout, const DWRITE_TEXT_METRICS& metrics, const std::wstring& text, const D2D1_RECT_F& rect, float glow_offset_y, float shadow_offset_y, ID2D1Brush* text_brush, std::wstring* last_text, int* anchor_progress_ms) {
+            if (!layout || text.empty()) {
+                return;
+            }
+
+            const float available_width = std::max(1.0f, rect.right - rect.left);
+            const float content_width = std::max(metrics.widthIncludingTrailingWhitespace, metrics.width);
+            const bool overflow = content_width > available_width + 4.0f;
+            const float marquee_offset = overflow
+                ? resolve_marquee_offset(text, content_width, available_width, state.progress_ms, last_text, anchor_progress_ms)
+                : 0.0f;
+            const float origin_x = overflow
+                ? (rect.left - marquee_offset)
+                : aligned_text_origin_x(config.align, rect.left, available_width, content_width);
+            const D2D1_POINT_2F text_origin = {origin_x, rect.top};
+            const D2D1_POINT_2F glow_origin = {origin_x, rect.top + glow_offset_y};
+            const D2D1_POINT_2F shadow_origin = {origin_x, rect.top + shadow_offset_y};
+
+            d2d_context_->PushAxisAlignedClip(rect, D2D1_ANTIALIAS_MODE_ALIASED);
+            d2d_context_->DrawTextLayout(glow_origin, layout, glow_brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            d2d_context_->DrawTextLayout(shadow_origin, layout, shadow_brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            d2d_context_->DrawTextLayout(text_origin, layout, text_brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            d2d_context_->PopAxisAlignedClip();
+        };
+
+        draw_text_layout_with_motion(
+            main_layout,
+            main_metrics,
+            main_text,
+            main_rect,
+            1.8f,
+            0.9f,
+            main_brush,
+            &last_main_marquee_text_,
+            &main_marquee_anchor_progress_ms_
+        );
 
         if (has_sub_text) {
-            d2d_context_->DrawText(
-                sub_text.c_str(),
-                static_cast<UINT32>(sub_text.size()),
-                sub_format,
-                &sub_glow,
-                glow_brush,
-                D2D1_DRAW_TEXT_OPTIONS_CLIP,
-                DWRITE_MEASURING_MODE_NATURAL
-            );
-            d2d_context_->DrawText(
-                sub_text.c_str(),
-                static_cast<UINT32>(sub_text.size()),
-                sub_format,
-                &sub_shadow,
-                shadow_brush,
-                D2D1_DRAW_TEXT_OPTIONS_CLIP,
-                DWRITE_MEASURING_MODE_NATURAL
-            );
-            d2d_context_->DrawText(
-                sub_text.c_str(),
-                static_cast<UINT32>(sub_text.size()),
-                sub_format,
-                &sub_rect,
+            draw_text_layout_with_motion(
+                sub_layout,
+                sub_metrics,
+                sub_text,
+                sub_rect,
+                1.2f,
+                0.7f,
                 sub_brush,
-                D2D1_DRAW_TEXT_OPTIONS_CLIP,
-                DWRITE_MEASURING_MODE_NATURAL
+                &last_sub_marquee_text_,
+                &sub_marquee_anchor_progress_ms_
             );
         }
 
@@ -724,6 +828,8 @@ bool TaskbarDCompRenderer::render(const TaskbarConfig& config, const TaskbarLyri
         success = true;
     } while (false);
 
+    safe_release(sub_layout);
+    safe_release(main_layout);
     safe_release(trimming_sign);
     safe_release(border_brush);
     safe_release(fill_brush);
