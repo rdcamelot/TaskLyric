@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -14,6 +15,43 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_REMOTE_DEBUG_PORT = 9222
 DEFAULT_POLL_INTERVAL_SECONDS = 1.0
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+def _stop_tasklyric_python_processes(*, include_launcher: bool = True) -> bool:
+    predicates = ["$_.CommandLine -like '*TaskLyric__efb8867*main.py*'", "$_.CommandLine -like '*TaskLyric*main.py*'"]
+    if include_launcher:
+        predicates.extend(["$_.CommandLine -like '*TaskLyric__efb8867*launcher.pyw*'", "$_.CommandLine -like '*TaskLyric*launcher.pyw*'"])
+    predicate = ' -or '.join(predicates)
+    command = (
+        "Get-CimInstance Win32_Process | "
+        "Where-Object { ($_.Name -ieq 'pythonw.exe' -or $_.Name -ieq 'python.exe') -and $_.CommandLine -and ("
+        f"{predicate}) }} | "
+        "Select-Object -ExpandProperty ProcessId | ConvertTo-Json -Compress"
+    )
+    payload = _powershell_json(command)
+    pids: list[int] = []
+    if isinstance(payload, int):
+        pids = [payload]
+    elif isinstance(payload, list):
+        pids = [int(value) for value in payload if isinstance(value, (int, float))]
+    stopped = False
+    current_pid = os.getpid()
+    for pid in pids:
+        if pid > 0 and pid != current_pid:
+            try:
+                subprocess.run(
+                    ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", f"Stop-Process -Id {pid} -Force -ErrorAction SilentlyContinue"],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=8,
+                    creationflags=CREATE_NO_WINDOW,
+                )
+                stopped = True
+            except (OSError, subprocess.SubprocessError):
+                continue
+    return stopped
 
 
 def _powershell_json(command: str):
@@ -212,7 +250,12 @@ def run(argv: Iterable[str] | None = None) -> None:
     parser.add_argument("--poll-interval", type=float, default=DEFAULT_POLL_INTERVAL_SECONDS)
     parser.add_argument("--launch-cloudmusic", action="store_true", help="Launch NetEase Cloud Music with the remote debug port before starting TaskLyric.")
     parser.add_argument("--restart-cloudmusic-with-debug", action="store_true", help="If Cloud Music is already running without a remote debug port, restart it with the debug port so exact sync and taskbar controls work.")
+    parser.add_argument("--stop", action="store_true", help="Stop the running TaskLyric background processes.")
     args = parser.parse_args(list(argv) if argv is not None else None)
+
+    if args.stop:
+        _stop_tasklyric_python_processes(include_launcher=True)
+        return
 
     launcher = TaskLyricBackgroundLauncher(
         remote_debug_port=args.remote_debug_port,

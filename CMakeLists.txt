@@ -8,3 +8,4 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_subdirectory(native)
 add_subdirectory(host)
+add_subdirectory(launcher)

@@ -8,6 +8,19 @@ The goal is to render synchronized lyrics into the taskbar area in a native way,
 
 This project is in active development.
 
+## Recovery Baseline
+
+This recovery branch is intentionally pinned to `efb8867`, the earlier revision that was still broadly usable for lyric synchronization.
+
+It intentionally does not bring back the later self-healing and always-on launcher flow from `origin/main`, because that layer introduced most of the restart and reattach regressions.
+
+What is added on top of `efb8867` in this recovery branch is only:
+
+- a minimal native `tasklyric_launcher.exe` wrapper
+- a conservative desktop shortcut flow that launches Cloud Music and TaskLyric explicitly
+
+The recommended day-to-day entry on this branch is the desktop launcher shortcut, not the later always-on auto-recovery flow.
+
 What is already available:
 
 - a buildable host DLL skeleton
@@ -71,19 +84,43 @@ powershell -ExecutionPolicy Bypass -File scripts\launch_cloudmusic_with_debug.ps
 python main.py --remote-debug-port 9222
 ```
 
-Run TaskLyric in the background without opening a terminal window:
+Run TaskLyric with the minimal native launcher wrapper:
 
 ```powershell
-pythonw launcher.pyw --remote-debug-port 9222 --restart-cloudmusic-with-debug
+build-tasklyric\launcher\tasklyric_launcher.exe --remote-debug-port 9222 --launch-cloudmusic --restart-cloudmusic-with-debug
 ```
 
-Install a Startup shortcut so TaskLyric watches Cloud Music automatically after you sign in:
+Install the simple Startup watcher:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\install_tasklyric_shortcut.ps1 -Startup -RestartCloudMusicWithDebug
+powershell -ExecutionPolicy Bypass -File scripts\install_tasklyric_shortcut.ps1 -Startup
 ```
 
-The hidden launcher watches `cloudmusic.exe`, starts TaskLyric only when NetEase Cloud Music is running, and stops it after Cloud Music exits. The `-RestartCloudMusicWithDebug` mode is recommended if you want exact pause, seek, previous, and next synchronization from the taskbar controls.
+This creates `TaskLyric Background.lnk` in the Startup folder. It keeps a lightweight watcher running so that when NetEase Cloud Music starts, TaskLyric starts too.
+
+Wire the pinned NetEase taskbar shortcut through TaskLyric:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install_tasklyric_shortcut.ps1 -TaskbarPinned
+```
+
+This rewrites the pinned NetEase Cloud Music shortcut in the taskbar so clicking the original taskbar icon launches Cloud Music and TaskLyric together through the stable recovery flow.
+
+If you want to restore the original pinned taskbar shortcut later, run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\restore_taskbar_shortcuts.ps1
+```
+
+Uninstall the recovery-branch integration cleanly with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\uninstall_tasklyric.ps1
+```
+
+This stops TaskLyric, removes the Startup watcher shortcut, removes the optional desktop shortcut, and restores any pinned NetEase taskbar shortcut that was routed through TaskLyric.
+
+A separate desktop launcher is still available if you want it, but it is no longer the recommended default for this recovery branch.
 
 Run the development end-to-end replay flow:
 
