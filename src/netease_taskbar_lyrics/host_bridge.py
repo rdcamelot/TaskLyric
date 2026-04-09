@@ -10,6 +10,12 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 DLL_CANDIDATES = (
+    ROOT / "build-marquee" / "host" / "tasklyric_host.dll",
+    ROOT / "build-smooth" / "host" / "tasklyric_host.dll",
+    ROOT / "build-stable" / "host" / "tasklyric_host.dll",
+    ROOT / "build-anim2" / "host" / "tasklyric_host.dll",
+    ROOT / "build-anim" / "host" / "tasklyric_host.dll",
+    ROOT / "build-hotfix" / "host" / "tasklyric_host.dll",
     ROOT / "build-tasklyric" / "host" / "tasklyric_host.dll",
     ROOT / "build" / "host" / "tasklyric_host.dll",
 )

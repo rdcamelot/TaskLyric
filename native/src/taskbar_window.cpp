@@ -4,9 +4,9 @@
 
 #include <windows.h>
 #include <windowsx.h>
-#include <wtsapi32.h>
 
 #include <algorithm>
+#include <cmath>
 #include <array>
 #include <filesystem>
 #include <fstream>
@@ -17,23 +17,21 @@
 namespace tasklyric::native {
 namespace {
 
-#ifndef WTS_SESSION_DESKTOP_READY
-#define WTS_SESSION_DESKTOP_READY 0xF
-#endif
-
 constexpr wchar_t kWindowClassName[] = L"TaskLyric.TaskbarWindow";
 constexpr UINT kRefreshMessage = WM_APP + 1;
 constexpr UINT_PTR kLayoutTimerId = 1;
-constexpr ULONGLONG kRecoveryDelayMs = 2500;
-constexpr int kPreferredWidth = 760;
-constexpr int kMinimumWidth = 260;
+constexpr UINT kLayoutTimerIntervalMs = 33;
+constexpr double kLayoutAnimationTimeConstantMs = 110.0;
+constexpr int kRectAnimationSnapPx = 1;
+constexpr int kPreferredWidth = 560;
+constexpr int kMinimumWidth = 220;
 constexpr int kFallbackHeight = 48;
 constexpr int kPaddingX = 12;
 constexpr int kPaddingY = 6;
 constexpr int kAnchorGap = 6;
 constexpr int kControlButtonSize = 24;
 constexpr int kControlButtonGap = 5;
-constexpr int kControlHitPadding = 1;
+constexpr int kControlHitPadding = 5;
 constexpr int kControlRightInset = 16;
 constexpr int kControlMinWidth = 360;
 constexpr int kControlTextGap = 12;
@@ -126,90 +124,108 @@ RECT empty_rect() {
     return rect;
 }
 
-bool child_rect_in_parent(HWND parent, const wchar_t* class_name, RECT* rect) {
-    HWND child = nullptr;
-    while ((child = FindWindowExW(parent, child, class_name, nullptr)) != nullptr) {
-        if (!IsWindowVisible(child)) {
-            continue;
-        }
-
-        RECT screen_rect{};
-        if (!GetWindowRect(child, &screen_rect)) {
-            continue;
-        }
-
-        POINT points[2] = {
-            { screen_rect.left, screen_rect.top },
-            { screen_rect.right, screen_rect.bottom },
-        };
-        MapWindowPoints(HWND_DESKTOP, parent, points, 2);
-
-        rect->left = points[0].x;
-        rect->top = points[0].y;
-        rect->right = points[1].x;
-        rect->bottom = points[1].y;
-        return true;
+RECT union_rect(const RECT& left, const RECT& right) {
+    if (!is_valid_rect(left)) {
+        return right;
     }
-    return false;
+    if (!is_valid_rect(right)) {
+        return left;
+    }
+
+    RECT merged{};
+    merged.left = std::min(left.left, right.left);
+    merged.top = std::min(left.top, right.top);
+    merged.right = std::max(left.right, right.right);
+    merged.bottom = std::max(left.bottom, right.bottom);
+    return merged;
 }
 
-struct DescendantSearchContext {
-    const wchar_t* target_class = nullptr;
-    HWND parent = nullptr;
+RECT offset_rect(const RECT& rect, int dx, int dy) {
+    if (!is_valid_rect(rect)) {
+        return empty_rect();
+    }
+
+    RECT shifted = rect;
+    OffsetRect(&shifted, dx, dy);
+    return shifted;
+}
+
+RECT child_screen_rect(HWND parent, const wchar_t* class_name) {
+    HWND child = FindWindowExW(parent, nullptr, class_name, nullptr);
+    if (!child) {
+        return empty_rect();
+    }
+
     RECT rect{};
-    bool found = false;
-};
+    if (!GetWindowRect(child, &rect)) {
+        return empty_rect();
+    }
+    return rect;
+}
 
-BOOL CALLBACK find_descendant_proc(HWND hwnd, LPARAM lparam) {
-    auto* context = reinterpret_cast<DescendantSearchContext*>(lparam);
-    if (!context || !context->target_class || !context->parent || context->found) {
-        return TRUE;
+bool rects_intersect(const RECT& left, const RECT& right) {
+    if (!is_valid_rect(left) || !is_valid_rect(right)) {
+        return false;
     }
 
-    wchar_t class_name[128]{};
-    if (GetClassNameW(hwnd, class_name, static_cast<int>(std::size(class_name))) <= 0) {
-        return TRUE;
-    }
+    RECT intersection{};
+    return IntersectRect(&intersection, &left, &right) == TRUE;
+}
 
-    if (wcscmp(class_name, context->target_class) != 0) {
-        return TRUE;
-    }
+int rect_width(const RECT& rect) {
+    return std::max(0, static_cast<int>(rect.right - rect.left));
+}
 
-    if (!IsWindowVisible(hwnd)) {
-        return TRUE;
+int rect_height(const RECT& rect) {
+    return std::max(0, static_cast<int>(rect.bottom - rect.top));
+}
+
+bool same_rect(const RECT& left, const RECT& right) {
+    return left.left == right.left && left.top == right.top && left.right == right.right && left.bottom == right.bottom;
+}
+
+bool rect_is_close(const RECT& left, const RECT& right, int tolerance = kRectAnimationSnapPx) {
+    return std::abs(left.left - right.left) <= tolerance
+        && std::abs(left.top - right.top) <= tolerance
+        && std::abs(left.right - right.right) <= tolerance
+        && std::abs(left.bottom - right.bottom) <= tolerance;
+}
+
+LONG animate_coordinate(LONG current, LONG target, double alpha) {
+    const double blended = static_cast<double>(current) + (static_cast<double>(target) - static_cast<double>(current)) * alpha;
+    return static_cast<LONG>(std::lround(blended));
+}
+
+RECT animate_rect_towards(const RECT& current, const RECT& target, double alpha) {
+    RECT animated{};
+    animated.left = animate_coordinate(current.left, target.left, alpha);
+    animated.top = animate_coordinate(current.top, target.top, alpha);
+    animated.right = animate_coordinate(current.right, target.right, alpha);
+    animated.bottom = animate_coordinate(current.bottom, target.bottom, alpha);
+    return animated;
+}
+
+bool child_rect_in_parent(HWND parent, const wchar_t* class_name, RECT* rect) {
+    HWND child = FindWindowExW(parent, nullptr, class_name, nullptr);
+    if (!child) {
+        return false;
     }
 
     RECT screen_rect{};
-    if (!GetWindowRect(hwnd, &screen_rect)) {
-        return TRUE;
+    if (!GetWindowRect(child, &screen_rect)) {
+        return false;
     }
 
     POINT points[2] = {
-        {screen_rect.left, screen_rect.top},
-        {screen_rect.right, screen_rect.bottom},
+        { screen_rect.left, screen_rect.top },
+        { screen_rect.right, screen_rect.bottom },
     };
-    MapWindowPoints(HWND_DESKTOP, context->parent, points, 2);
+    MapWindowPoints(HWND_DESKTOP, parent, points, 2);
 
-    context->rect.left = points[0].x;
-    context->rect.top = points[0].y;
-    context->rect.right = points[1].x;
-    context->rect.bottom = points[1].y;
-    context->found = true;
-    return FALSE;
-}
-
-bool descendant_rect_in_parent(HWND parent, const wchar_t* class_name, RECT* rect) {
-    if (!parent || !class_name || !rect) {
-        return false;
-    }
-    DescendantSearchContext context{};
-    context.target_class = class_name;
-    context.parent = parent;
-    EnumChildWindows(parent, find_descendant_proc, reinterpret_cast<LPARAM>(&context));
-    if (!context.found) {
-        return false;
-    }
-    *rect = context.rect;
+    rect->left = points[0].x;
+    rect->top = points[0].y;
+    rect->right = points[1].x;
+    rect->bottom = points[1].y;
     return true;
 }
 
@@ -221,8 +237,7 @@ std::wstring rect_json(const RECT& rect) {
 
 }  // namespace
 
-TaskbarControlLayout compute_taskbar_control_layout(UINT width, UINT height, UINT task_list_right) {
-    (void)task_list_right;
+TaskbarControlLayout compute_taskbar_control_layout(UINT width, UINT height) {
     TaskbarControlLayout layout{};
     layout.text_rect = {0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
 
@@ -235,6 +250,9 @@ TaskbarControlLayout compute_taskbar_control_layout(UINT width, UINT height, UIN
     const int total_width = (kControlButtonSize * 3) + (kControlButtonGap * 2);
     const int group_right = width_i - kControlRightInset;
     const int group_left = group_right - total_width;
+    if (group_left <= 160) {
+        return layout;
+    }
 
     const int top = std::max(6, (height_i - kControlButtonSize) / 2);
     layout.visible = true;
@@ -463,46 +481,6 @@ LRESULT CALLBACK TaskbarWindow::window_proc(HWND hwnd, UINT message, WPARAM wpar
     case WM_TIMER:
         self->refresh_window();
         return 0;
-    case WM_WTSSESSION_CHANGE: {
-        std::scoped_lock lock(self->mutex_);
-        if (wparam == WTS_SESSION_LOCK) {
-            self->session_locked_ = true;
-            self->last_layout_ = {};
-            self->last_layout_query_time_ = 0;
-            self->renderer_reset_pending_ = true;
-            self->recovery_until_ms_ = GetTickCount64() + kRecoveryDelayMs;
-            append_debug_line(L"window: session locked; defer renderer recovery");
-        } else if (wparam == WTS_SESSION_UNLOCK || wparam == WTS_SESSION_DESKTOP_READY) {
-            self->session_locked_ = false;
-            self->last_layout_ = {};
-            self->cached_task_list_right_ = 160;
-            self->last_layout_query_time_ = 0;
-            self->renderer_reset_pending_ = true;
-            self->recovery_until_ms_ = GetTickCount64() + kRecoveryDelayMs;
-            if (self->hwnd_) {
-                ShowWindow(self->hwnd_, SW_SHOWNOACTIVATE);
-            }
-            append_debug_line(L"window: session unlocked; schedule renderer reset");
-        }
-        return 0;
-    }
-    case WM_POWERBROADCAST: {
-        std::scoped_lock lock(self->mutex_);
-        if (wparam == PBT_APMSUSPEND) {
-            self->session_locked_ = true;
-            self->renderer_reset_pending_ = true;
-            self->recovery_until_ms_ = GetTickCount64() + kRecoveryDelayMs;
-            append_debug_line(L"window: power suspend; defer renderer recovery");
-        } else if (wparam == PBT_APMRESUMEAUTOMATIC || wparam == PBT_APMRESUMESUSPEND) {
-            self->session_locked_ = false;
-            self->renderer_reset_pending_ = true;
-            self->recovery_until_ms_ = GetTickCount64() + kRecoveryDelayMs;
-            self->last_layout_ = {};
-            self->last_layout_query_time_ = 0;
-            append_debug_line(L"window: power resume; schedule renderer reset");
-        }
-        return TRUE;
-    }
     case kRefreshMessage:
         self->refresh_window();
         return 0;
@@ -520,10 +498,6 @@ LRESULT CALLBACK TaskbarWindow::window_proc(HWND hwnd, UINT message, WPARAM wpar
     }
     case WM_DESTROY:
         KillTimer(hwnd, kLayoutTimerId);
-        if (self->session_notifications_registered_) {
-            WTSUnRegisterSessionNotification(hwnd);
-            self->session_notifications_registered_ = false;
-        }
         PostQuitMessage(0);
         return 0;
     default:
@@ -547,12 +521,10 @@ void TaskbarWindow::thread_main() {
     RegisterClassW(&window_class);
 
     HWND parent = FindWindowW(L"Shell_TrayWnd", nullptr);
-    if (!parent || !IsWindow(parent) || IsHungAppWindow(parent)) {
-        parent = nullptr;
-    }
-    const bool attach_to_taskbar = parent != nullptr;
-    const DWORD style = attach_to_taskbar ? (WS_CHILD | WS_VISIBLE | WS_DISABLED) : (WS_POPUP | WS_VISIBLE | WS_DISABLED);
-    const DWORD ex_style = attach_to_taskbar ? 0 : (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE);
+    const DWORD style = parent ? (WS_CHILD | WS_VISIBLE) : (WS_POPUP | WS_VISIBLE | WS_DISABLED);
+    const DWORD ex_style = parent
+        ? (WS_EX_NOPARENTNOTIFY | WS_EX_NOACTIVATE | WS_EX_NOREDIRECTIONBITMAP)
+        : (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE);
 
     HWND hwnd = CreateWindowExW(
         ex_style,
@@ -574,7 +546,7 @@ void TaskbarWindow::thread_main() {
         hwnd_ = hwnd;
         parent_hwnd_ = parent;
         thread_id_ = GetCurrentThreadId();
-        attached_ = attach_to_taskbar;
+        attached_ = parent != nullptr;
         ensure_fonts_locked();
         renderer_ = std::make_unique<TaskbarDCompRenderer>();
         composition_ready_ = false;
@@ -585,12 +557,13 @@ void TaskbarWindow::thread_main() {
         pending_command_json_.clear();
         tracking_mouse_leave_ = false;
         last_layout_ = {};
-        cached_task_list_right_ = 160;
-        last_layout_query_time_ = 0;
-        session_locked_ = false;
-        renderer_reset_pending_ = false;
-        recovery_until_ms_ = 0;
-        // UIA locator is intentionally disabled in runtime path to avoid Explorer hangs after Win+L.
+        target_screen_rect_ = {};
+        animated_screen_rect_ = {};
+        layout_transition_active_ = false;
+        last_animation_tick_ = 0;
+        if (attached_) {
+            locator_.initialize(parent_hwnd_);
+        }
     }
 
     if (ready_event_) {
@@ -607,11 +580,7 @@ void TaskbarWindow::thread_main() {
     }
 
     ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-    if (WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION)) {
-        std::scoped_lock lock(mutex_);
-        session_notifications_registered_ = true;
-    }
-    SetTimer(hwnd, kLayoutTimerId, 800, nullptr);
+    SetTimer(hwnd, kLayoutTimerId, kLayoutTimerIntervalMs, nullptr);
     refresh_window();
 
     MSG message{};
@@ -622,6 +591,7 @@ void TaskbarWindow::thread_main() {
 
     {
         std::scoped_lock lock(mutex_);
+        locator_.shutdown();
         if (renderer_) {
             renderer_->shutdown();
         }
@@ -638,11 +608,10 @@ void TaskbarWindow::thread_main() {
         pending_command_json_.clear();
         tracking_mouse_leave_ = false;
         last_layout_ = {};
-        cached_task_list_right_ = 160;
-        last_layout_query_time_ = 0;
-        session_locked_ = false;
-        renderer_reset_pending_ = false;
-        recovery_until_ms_ = 0;
+        target_screen_rect_ = {};
+        animated_screen_rect_ = {};
+        layout_transition_active_ = false;
+        last_animation_tick_ = 0;
     }
 
     UnregisterClassW(kWindowClassName, module);
@@ -703,7 +672,18 @@ void TaskbarWindow::destroy_fonts_locked() {
     }
 }
 
-void TaskbarWindow::ensure_taskbar_parent_locked() {}
+void TaskbarWindow::reset_renderer_locked(const wchar_t* reason) {
+    if (!renderer_ || !composition_ready_) {
+        return;
+    }
+    if (reason && *reason) {
+        append_debug_line((std::wstring(L"renderer reset: ") + reason).c_str());
+    }
+    renderer_->shutdown();
+    renderer_ = std::make_unique<TaskbarDCompRenderer>();
+    composition_ready_ = false;
+    composition_attempted_ = false;
+}
 
 bool TaskbarWindow::compute_target_rect_locked(RECT* screen_rect) {
     if (!screen_rect) {
@@ -712,93 +692,127 @@ bool TaskbarWindow::compute_target_rect_locked(RECT* screen_rect) {
 
     *screen_rect = empty_rect();
 
-    const ULONGLONG now = GetTickCount64();
-    constexpr ULONGLONG kLayoutQueryIntervalMs = 650;
-    if (last_layout_.valid && is_valid_rect(last_layout_.lyric_rect) && (now - last_layout_query_time_) < kLayoutQueryIntervalMs) {
-        *screen_rect = last_layout_.lyric_rect;
-        return true;
+    HWND parent_hwnd = nullptr;
+    bool attached = false;
+    {
+        std::scoped_lock lock(mutex_);
+        parent_hwnd = parent_hwnd_;
+        attached = attached_;
     }
 
-    HWND taskbar_hwnd = FindWindowW(L"Shell_TrayWnd", nullptr);
-    if (taskbar_hwnd && IsWindow(taskbar_hwnd) && !IsHungAppWindow(taskbar_hwnd)) {
-        RECT taskbar_screen{};
-        RECT taskbar_client{};
-        if (GetWindowRect(taskbar_hwnd, &taskbar_screen) && GetClientRect(taskbar_hwnd, &taskbar_client)) {
-            const int bar_width = taskbar_client.right - taskbar_client.left;
-            const int bar_height = taskbar_client.bottom - taskbar_client.top;
-            if (bar_width > 0 && bar_height > 0) {
-                const int window_height = std::max(32, bar_height - 2);
-                const int y = std::max(0, (bar_height - window_height) / 2);
+    auto commit_layout = [this](const TaskbarLayout& layout) {
+        std::scoped_lock lock(mutex_);
+        last_layout_ = layout;
+    };
 
-                RECT anchor_rect{};
-                bool has_anchor = child_rect_in_parent(taskbar_hwnd, L"MSTaskSwWClass", &anchor_rect);
-                if (!has_anchor) {
-                    has_anchor = child_rect_in_parent(taskbar_hwnd, L"ReBarWindow32", &anchor_rect);
+    auto compute_live_taskbar_layout = [&](TaskbarLayout* layout, RECT* resolved_rect) -> bool {
+        if (!layout || !resolved_rect || !attached || !parent_hwnd || !IsWindow(parent_hwnd)) {
+            return false;
+        }
+
+        RECT parent_rect{};
+        RECT client{};
+        if (!GetWindowRect(parent_hwnd, &parent_rect) || !GetClientRect(parent_hwnd, &client)) {
+            return false;
+        }
+
+        const int width = client.right - client.left;
+        const int height = client.bottom - client.top;
+        if (width <= 0 || height <= 0) {
+            return false;
+        }
+
+        const int window_height = std::clamp(height - 2, 32, 60);
+        const int y = std::max(0, (height - window_height) / 2);
+
+        RECT start_rect{};
+        RECT task_switcher_rect{};
+        RECT rebar_rect{};
+        RECT tray_rect{};
+        child_rect_in_parent(parent_hwnd, L"Start", &start_rect);
+        child_rect_in_parent(parent_hwnd, L"MSTaskSwWClass", &task_switcher_rect);
+        child_rect_in_parent(parent_hwnd, L"ReBarWindow32", &rebar_rect);
+        child_rect_in_parent(parent_hwnd, L"TrayNotifyWnd", &tray_rect);
+
+        RECT anchor_rect = union_rect(start_rect, task_switcher_rect);
+        anchor_rect = union_rect(anchor_rect, rebar_rect);
+
+        int x = kPaddingX;
+        int window_width = std::clamp(kPreferredWidth, kMinimumWidth, std::max(kMinimumWidth, width - (kPaddingX * 2)));
+        std::wstring source = L"window-live-center";
+
+        if (is_valid_rect(anchor_rect)) {
+            const int left_available = anchor_rect.left - kAnchorGap - (kPaddingX * 2);
+            if (left_available >= kMinimumWidth) {
+                window_width = std::min(kPreferredWidth, left_available);
+                x = std::max(kPaddingX, static_cast<int>(anchor_rect.left) - kAnchorGap - window_width);
+                source = L"window-live-left-of-start";
+            } else if (is_valid_rect(tray_rect)) {
+                const int between = tray_rect.left - anchor_rect.right - (kPaddingX * 2);
+                if (between >= kMinimumWidth) {
+                    window_width = std::min(kPreferredWidth, between);
+                    x = anchor_rect.right + std::max(kPaddingX, (between - window_width) / 2);
+                    source = L"window-live-between-tasklist-tray";
                 }
-                if (!has_anchor) {
-                    has_anchor = descendant_rect_in_parent(taskbar_hwnd, L"MSTaskSwWClass", &anchor_rect);
-                }
-                if (!has_anchor) {
-                    has_anchor = descendant_rect_in_parent(taskbar_hwnd, L"ReBarWindow32", &anchor_rect);
-                }
-
-                RECT start_rect{};
-                bool has_start = child_rect_in_parent(taskbar_hwnd, L"Start", &start_rect);
-                if (!has_start) {
-                    has_start = descendant_rect_in_parent(taskbar_hwnd, L"Start", &start_rect);
-                }
-
-                RECT tray_rect{};
-                const bool has_tray = descendant_rect_in_parent(taskbar_hwnd, L"TrayNotifyWnd", &tray_rect);
-
-                const int region_left = kPaddingX;
-                int region_right = has_start
-                    ? (static_cast<int>(start_rect.left) - kAnchorGap)
-                    : (has_tray ? (static_cast<int>(tray_rect.left) - kPaddingX) : (bar_width - kPaddingX));
-                region_right = std::clamp(region_right, region_left + kMinimumWidth, bar_width - kPaddingX);
-
-                const int available_width = std::max(0, region_right - region_left);
-                const int window_width = std::clamp(kPreferredWidth, kMinimumWidth, std::max(kMinimumWidth, available_width));
-                const int x = region_left + std::max(0, (available_width - window_width) / 2);
-
-                screen_rect->left = taskbar_screen.left + x;
-                screen_rect->top = taskbar_screen.top + y;
-                screen_rect->right = screen_rect->left + window_width;
-                screen_rect->bottom = screen_rect->top + window_height;
-                cached_task_list_right_ = has_anchor ? static_cast<UINT>(std::max(0, static_cast<int>(anchor_rect.right) - x)) : 160;
-                last_layout_query_time_ = now;
-                last_layout_.valid = true;
-                last_layout_.centered = false;
-                last_layout_.widgets_enabled = false;
-                last_layout_.source = has_start ? L"taskbar-left-of-start" : L"taskbar-region";
-                last_layout_.taskbar_frame = taskbar_screen;
-                last_layout_.task_list = anchor_rect;
-                last_layout_.tray_frame = tray_rect;
-                last_layout_.widgets_button = {};
-                last_layout_.lyric_rect = *screen_rect;
-                return true;
             }
+        }
+
+        resolved_rect->left = parent_rect.left + x;
+        resolved_rect->top = parent_rect.top + y;
+        resolved_rect->right = resolved_rect->left + window_width;
+        resolved_rect->bottom = resolved_rect->top + window_height;
+
+        layout->valid = true;
+        layout->centered = false;
+        layout->widgets_enabled = false;
+        layout->source = source;
+        layout->taskbar_frame = parent_rect;
+        layout->task_list = offset_rect(anchor_rect, parent_rect.left, parent_rect.top);
+        layout->tray_frame = offset_rect(tray_rect, parent_rect.left, parent_rect.top);
+        layout->widgets_button = {};
+        layout->lyric_rect = *resolved_rect;
+        return true;
+    };
+
+    if (attached && parent_hwnd && IsWindow(parent_hwnd)) {
+        TaskbarLayout layout{};
+        if (compute_live_taskbar_layout(&layout, screen_rect)) {
+            commit_layout(layout);
+            return true;
+        }
+
+        layout = locator_.query();
+        const RECT start_screen = child_screen_rect(parent_hwnd, L"Start");
+        const RECT task_switcher_screen = child_screen_rect(parent_hwnd, L"MSTaskSwWClass");
+        const RECT tray_screen = child_screen_rect(parent_hwnd, L"TrayNotifyWnd");
+        const bool overlaps_shell = rects_intersect(layout.lyric_rect, start_screen)
+            || rects_intersect(layout.lyric_rect, task_switcher_screen)
+            || rects_intersect(layout.lyric_rect, tray_screen);
+        if (layout.valid && is_valid_rect(layout.lyric_rect) && !overlaps_shell) {
+            commit_layout(layout);
+            *screen_rect = layout.lyric_rect;
+            return true;
         }
     }
 
     RECT work{};
     SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
-    const int work_width = std::max(0, static_cast<int>(work.right - work.left));
-    const int overlay_width = std::clamp(kPreferredWidth, kMinimumWidth, std::max(kMinimumWidth, work_width - (kPaddingX * 2)));
-    screen_rect->left = work.left + std::max(kPaddingX, (work_width - overlay_width) / 2);
+    screen_rect->left = work.left + ((work.right - work.left) - kPreferredWidth) / 2;
     screen_rect->top = work.bottom - kFallbackHeight - 8;
-    screen_rect->right = screen_rect->left + overlay_width;
+    screen_rect->right = screen_rect->left + kPreferredWidth;
     screen_rect->bottom = screen_rect->top + kFallbackHeight;
-    last_layout_query_time_ = now;
-    last_layout_.valid = true;
-    last_layout_.centered = false;
-    last_layout_.widgets_enabled = false;
-    last_layout_.source = L"work-area-fallback";
-    last_layout_.taskbar_frame = work;
-    last_layout_.task_list = {};
-    last_layout_.tray_frame = {};
-    last_layout_.widgets_button = {};
-    last_layout_.lyric_rect = *screen_rect;
+
+    TaskbarLayout layout{};
+    layout.valid = true;
+    layout.centered = false;
+    layout.widgets_enabled = false;
+    layout.source = L"work-area-fallback";
+    layout.taskbar_frame = work;
+    layout.task_list = {};
+    layout.tray_frame = {};
+    layout.widgets_button = {};
+    layout.lyric_rect = *screen_rect;
+    commit_layout(layout);
     return true;
 }
 
@@ -807,9 +821,17 @@ void TaskbarWindow::apply_window_rect(const RECT& screen_rect) {
         return;
     }
 
+    HWND parent_hwnd = nullptr;
+    bool attached = false;
+    {
+        std::scoped_lock lock(mutex_);
+        parent_hwnd = parent_hwnd_;
+        attached = attached_;
+    }
+
     RECT reference_rect{};
-    if (attached_ && parent_hwnd_ && IsWindow(parent_hwnd_)) {
-        GetWindowRect(parent_hwnd_, &reference_rect);
+    if (attached && parent_hwnd && IsWindow(parent_hwnd)) {
+        GetWindowRect(parent_hwnd, &reference_rect);
     }
 
     const int x = screen_rect.left - reference_rect.left;
@@ -824,21 +846,22 @@ void TaskbarWindow::apply_window_rect(const RECT& screen_rect) {
     GetWindowRect(hwnd_, &current);
     const bool changed = current.left != screen_rect.left || current.top != screen_rect.top || current.right != screen_rect.right || current.bottom != screen_rect.bottom;
 
-    const bool use_topmost = !attached_;
-    const HWND z_order = use_topmost ? HWND_TOPMOST : HWND_TOP;
     if (changed) {
-        SetWindowPos(hwnd_, z_order, x, y, width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
-    } else if (!IsWindowVisible(hwnd_)) {
-        SetWindowPos(hwnd_, z_order, x, y, width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
-    } else if (attached_) {
-        SetWindowPos(hwnd_, HWND_TOP, x, y, width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        MoveWindow(hwnd_, x, y, width, height, FALSE);
     }
+    BringWindowToTop(hwnd_);
+    ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
 
     {
         std::scoped_lock lock(mutex_);
-        window_width_ = static_cast<UINT>(width);
-        window_height_ = static_cast<UINT>(height);
-        if (renderer_ && composition_ready_) {
+        const UINT next_width = static_cast<UINT>(width);
+        const UINT next_height = static_cast<UINT>(height);
+        const bool geometry_changed = changed || next_width != window_width_ || next_height != window_height_;
+        window_width_ = next_width;
+        window_height_ = next_height;
+        if (geometry_changed && renderer_ && composition_ready_) {
+            reset_renderer_locked(L"snap-layout-change");
+        } else if (renderer_ && composition_ready_) {
             renderer_->resize(window_width_, window_height_);
         }
     }
@@ -849,25 +872,15 @@ void TaskbarWindow::apply_window_rect(const RECT& screen_rect) {
 }
 
 void TaskbarWindow::refresh_window() {
-    {
-        std::scoped_lock lock(mutex_);
-        const ULONGLONG now = GetTickCount64();
-        if (renderer_reset_pending_ && now >= recovery_until_ms_) {
-            if (renderer_) {
-                renderer_->shutdown();
-            }
-            renderer_ = std::make_unique<TaskbarDCompRenderer>();
-            composition_ready_ = false;
-            composition_attempted_ = false;
-            renderer_reset_pending_ = false;
-            append_debug_line(L"window: renderer reset completed");
-        }
-    }
-
     RECT screen_rect{};
+    compute_target_rect_locked(&screen_rect);
+
     {
         std::scoped_lock lock(mutex_);
-        compute_target_rect_locked(&screen_rect);
+        target_screen_rect_ = screen_rect;
+        animated_screen_rect_ = screen_rect;
+        layout_transition_active_ = false;
+        last_animation_tick_ = GetTickCount64();
     }
 
     if (is_valid_rect(screen_rect)) {
@@ -902,9 +915,7 @@ bool TaskbarWindow::render_with_composition_locked() {
         return false;
     }
 
-    update_task_list_right_if_needed_locked();
-
-    return renderer_->render(config_, lyric_state_, ui_state_, window_width_, window_height_, cached_task_list_right_);
+    return renderer_->render(config_, lyric_state_, ui_state_, window_width_, window_height_);
 }
 
 void TaskbarWindow::paint_locked(HDC hdc) {
@@ -970,21 +981,8 @@ void TaskbarWindow::paint_locked(HDC hdc) {
     }
 }
 
-void TaskbarWindow::update_task_list_right_if_needed_locked() {
-    if (last_layout_.valid
-        && last_layout_.task_list.right > last_layout_.task_list.left
-        && last_layout_.lyric_rect.right > last_layout_.lyric_rect.left) {
-        const LONG relative_right = last_layout_.task_list.right - last_layout_.lyric_rect.left;
-        cached_task_list_right_ = static_cast<UINT>(std::max<LONG>(0, relative_right));
-    }
-}
-
 TaskbarControlAction TaskbarWindow::hit_test_control_locked(POINT point) const {
-    if (!config_.enable_controls) {
-        return TaskbarControlAction::none;
-    }
-
-    const TaskbarControlLayout layout = compute_taskbar_control_layout(window_width_, window_height_, cached_task_list_right_);
+    const TaskbarControlLayout layout = compute_taskbar_control_layout(window_width_, window_height_);
     if (!layout.visible) {
         return TaskbarControlAction::none;
     }

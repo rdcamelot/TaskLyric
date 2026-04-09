@@ -3,6 +3,7 @@
 #include "tasklyric/taskbar_window.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <sstream>
 
 namespace tasklyric::native {
@@ -70,6 +71,81 @@ D2D1_RECT_F to_d2d_rect(const RECT& rect) {
         static_cast<float>(rect.right),
         static_cast<float>(rect.bottom),
     };
+}
+
+float aligned_text_origin_x(std::wstring_view align, float left, float available_width, float content_width) {
+    if (align == L"right") {
+        return left + std::max(0.0f, available_width - content_width);
+    }
+    if (align == L"center") {
+        return left + std::max(0.0f, (available_width - content_width) * 0.5f);
+    }
+    return left;
+}
+
+int resolve_effective_progress_ms(
+    const TaskbarLyricState& state,
+    ULONGLONG now_tick_ms,
+    int* last_sample_progress_ms,
+    ULONGLONG* last_sample_tick_ms,
+    std::wstring* last_playback_state
+) {
+    if (!last_sample_progress_ms || !last_sample_tick_ms || !last_playback_state) {
+        return state.progress_ms;
+    }
+
+    if (*last_sample_tick_ms == 0 || *last_sample_progress_ms != state.progress_ms || *last_playback_state != state.playback_state) {
+        *last_sample_progress_ms = state.progress_ms;
+        *last_sample_tick_ms = now_tick_ms;
+        *last_playback_state = state.playback_state;
+    }
+
+    int predicted_progress_ms = state.progress_ms;
+    if (_wcsicmp(state.playback_state.c_str(), L"playing") == 0 && *last_sample_tick_ms > 0) {
+        const ULONGLONG delta = now_tick_ms - *last_sample_tick_ms;
+        predicted_progress_ms += static_cast<int>(std::min<ULONGLONG>(delta, 500));
+    }
+    return predicted_progress_ms;
+}
+
+float resolve_marquee_offset(
+    std::wstring_view text,
+    float content_width,
+    float available_width,
+    int effective_progress_ms,
+    std::wstring* last_text,
+    int* anchor_progress_ms
+) {
+    if (!last_text || !anchor_progress_ms || text.empty() || content_width <= available_width + 1.0f) {
+        if (last_text) {
+            *last_text = std::wstring(text);
+        }
+        if (anchor_progress_ms) {
+            *anchor_progress_ms = effective_progress_ms;
+        }
+        return 0.0f;
+    }
+
+    if (*last_text != text || effective_progress_ms + 1800 < *anchor_progress_ms) {
+        *last_text = std::wstring(text);
+        *anchor_progress_ms = effective_progress_ms;
+        return 0.0f;
+    }
+
+    const float overflow = std::max(0.0f, content_width - available_width);
+    if (overflow <= 1.0f) {
+        return 0.0f;
+    }
+
+    constexpr int kHoldStartMs = 900;
+    constexpr float kScrollPixelsPerSecond = 30.0f;
+    const int elapsed_ms = std::max(0, effective_progress_ms - *anchor_progress_ms);
+    if (elapsed_ms <= kHoldStartMs) {
+        return 0.0f;
+    }
+
+    const float offset = static_cast<float>(elapsed_ms - kHoldStartMs) * kScrollPixelsPerSecond / 1000.0f;
+    return std::min(overflow, offset);
 }
 
 constexpr wchar_t kThemePersonalizeKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize";
@@ -370,7 +446,7 @@ bool TaskbarDCompRenderer::resize(UINT width, UINT height) {
     return true;
 }
 
-bool TaskbarDCompRenderer::render(const TaskbarConfig& config, const TaskbarLyricState& state, const TaskbarWindowUiState& ui_state, UINT width, UINT height, UINT task_list_right) {
+bool TaskbarDCompRenderer::render(const TaskbarConfig& config, const TaskbarLyricState& state, const TaskbarWindowUiState& ui_state, UINT width, UINT height) {
     if (!ready_ || !resize(width, height) || !target_bitmap_) {
         return false;
     }
@@ -395,6 +471,10 @@ bool TaskbarDCompRenderer::render(const TaskbarConfig& config, const TaskbarLyri
     ID2D1SolidColorBrush* fill_brush = nullptr;
     ID2D1SolidColorBrush* border_brush = nullptr;
     IDWriteInlineObject* trimming_sign = nullptr;
+    IDWriteTextLayout* main_layout = nullptr;
+    IDWriteTextLayout* sub_layout = nullptr;
+    DWRITE_TEXT_METRICS main_metrics{};
+    DWRITE_TEXT_METRICS sub_metrics{};
 
     bool success = false;
     HRESULT hr = S_OK;
@@ -407,11 +487,20 @@ bool TaskbarDCompRenderer::render(const TaskbarConfig& config, const TaskbarLyri
     const bool light_theme = config.theme_mode == L"light" || (config.theme_mode != L"dark" && system_uses_light_theme());
     const VisualPalette palette = resolve_palette(config);
     const DWRITE_TEXT_ALIGNMENT alignment = to_text_alignment(config.align);
-    const FLOAT main_font_size = static_cast<FLOAT>(std::clamp(config.font_size, 13, 36));
-    const FLOAT sub_font_size = static_cast<FLOAT>(std::max(12, config.font_size - 5));
+    const FLOAT base_main_font_size = static_cast<FLOAT>(std::clamp(config.font_size, 13, 36));
+    const FLOAT main_font_size = has_sub_text ? std::max(14.0f, base_main_font_size - 2.0f) : base_main_font_size;
+    const FLOAT sub_font_size = has_sub_text ? std::max(10.0f, main_font_size - 5.0f) : std::max(11.0f, base_main_font_size - 5.0f);
     const float width_f = static_cast<float>(width);
     const float height_f = static_cast<float>(height);
-    const TaskbarControlLayout control_layout = compute_taskbar_control_layout(width, height, task_list_right);
+    const ULONGLONG now_tick_ms = GetTickCount64();
+    const int effective_progress_ms = resolve_effective_progress_ms(
+        state,
+        now_tick_ms,
+        &last_progress_sample_ms_,
+        &last_progress_sample_tick_ms_,
+        &last_playback_state_
+    );
+    const TaskbarControlLayout control_layout = compute_taskbar_control_layout(width, height);
     const float card_inset_x = debug_mode ? 0.0f : 8.0f;
     const float card_inset_y = debug_mode ? 0.0f : 7.0f;
     const float card_radius = debug_mode ? 0.0f : 14.0f;
@@ -422,20 +511,17 @@ bool TaskbarDCompRenderer::render(const TaskbarConfig& config, const TaskbarLyri
     const D2D1_ROUNDED_RECT glass_inner = {{glass_rect.rect.left + 1.0f, glass_rect.rect.top + 1.0f, glass_rect.rect.right - 1.0f, glass_rect.rect.bottom - 1.0f}, std::max(0.0f, card_radius - 1.0f), std::max(0.0f, card_radius - 1.0f)};
     const float text_inset_x = debug_mode ? 16.0f : (glass_rect.rect.left + 14.0f);
     const float text_right = control_layout.visible ? std::max(text_inset_x + 72.0f, static_cast<float>(control_layout.text_rect.right - 4)) : (width_f - text_inset_x);
-    const float top_anchor = debug_mode ? 5.0f : (glass_rect.rect.top + 4.5f);
-    const float bottom_anchor = debug_mode ? (height_f - 5.0f) : (glass_rect.rect.bottom - 4.5f);
-    const float two_line_height = main_font_size + sub_font_size + 6.0f;
-    const float centered_two_line_top = top_anchor + std::max(0.0f, ((bottom_anchor - top_anchor) - two_line_height) * 0.5f);
-    const float main_top = has_sub_text
-        ? centered_two_line_top
-        : std::max(top_anchor, ((top_anchor + bottom_anchor - (main_font_size + 8.0f)) * 0.5f) - 0.5f);
-    const float main_bottom = has_sub_text ? (main_top + main_font_size + 5.0f) : (main_top + main_font_size + 8.0f);
-    const D2D1_RECT_F main_rect = {text_inset_x, main_top, text_right, main_bottom};
-    const D2D1_RECT_F sub_rect = {text_inset_x, has_sub_text ? (main_bottom - 0.25f) : 0.0f, text_right, has_sub_text ? bottom_anchor : 0.0f};
-    const D2D1_RECT_F main_glow = {main_rect.left, main_rect.top + 1.8f, main_rect.right, main_rect.bottom + 1.8f};
-    const D2D1_RECT_F main_shadow = {main_rect.left, main_rect.top + 0.9f, main_rect.right, main_rect.bottom + 0.9f};
-    const D2D1_RECT_F sub_glow = {sub_rect.left, sub_rect.top + 1.2f, sub_rect.right, sub_rect.bottom + 1.2f};
-    const D2D1_RECT_F sub_shadow = {sub_rect.left, sub_rect.top + 0.7f, sub_rect.right, sub_rect.bottom + 0.7f};
+    const float content_top = debug_mode ? 5.0f : (glass_rect.rect.top + 5.0f);
+    const float content_bottom = debug_mode ? (height_f - 5.0f) : (glass_rect.rect.bottom - 4.0f);
+    const float content_height = std::max(18.0f, content_bottom - content_top);
+    const float sub_band_height = has_sub_text ? std::max(sub_font_size + 3.0f, content_height * 0.38f) : 0.0f;
+    const float main_band_bottom = has_sub_text ? std::max(content_top + 10.0f, content_bottom - sub_band_height + 1.0f) : content_bottom;
+    const D2D1_RECT_F main_rect = {text_inset_x, content_top - 0.5f, text_right, has_sub_text ? main_band_bottom : content_bottom};
+    const D2D1_RECT_F sub_rect = {text_inset_x, has_sub_text ? (main_band_bottom - 1.5f) : 0.0f, text_right, has_sub_text ? (content_bottom + 1.0f) : 0.0f};
+    const D2D1_RECT_F main_glow = {main_rect.left, main_rect.top + 1.6f, main_rect.right, main_rect.bottom + 1.6f};
+    const D2D1_RECT_F main_shadow = {main_rect.left, main_rect.top + 0.8f, main_rect.right, main_rect.bottom + 0.8f};
+    const D2D1_RECT_F sub_glow = {sub_rect.left, sub_rect.top + 1.0f, sub_rect.right, sub_rect.bottom + 1.0f};
+    const D2D1_RECT_F sub_shadow = {sub_rect.left, sub_rect.top + 0.55f, sub_rect.right, sub_rect.bottom + 0.55f};
     const D2D1_POINT_2F top_highlight_start = {glass_rect.rect.left + 14.0f, glass_rect.rect.top + 1.25f};
     const D2D1_POINT_2F top_highlight_end = {glass_rect.rect.right - 14.0f, glass_rect.rect.top + 1.25f};
     const D2D1_POINT_2F bottom_edge_start = {glass_rect.rect.left + 13.0f, glass_rect.rect.bottom - 1.15f};
@@ -598,6 +684,59 @@ bool TaskbarDCompRenderer::render(const TaskbarConfig& config, const TaskbarLyri
             }
         }
 
+        const FLOAT main_available_width = std::max(1.0f, main_rect.right - main_rect.left);
+        const FLOAT sub_available_width = std::max(1.0f, sub_rect.right - sub_rect.left);
+        const FLOAT main_layout_width = std::max(4096.0f, main_available_width + 64.0f);
+        const FLOAT sub_layout_width = std::max(4096.0f, sub_available_width + 64.0f);
+        const FLOAT main_layout_height = std::max(20.0f, main_rect.bottom - main_rect.top + 4.0f);
+        const FLOAT sub_layout_height = std::max(18.0f, sub_rect.bottom - sub_rect.top + 4.0f);
+        const bool main_text_present = !main_text.empty();
+        const bool sub_text_present = has_sub_text && !sub_text.empty();
+
+        if (main_text_present) {
+            hr = dwrite_factory_->CreateTextLayout(
+                main_text.c_str(),
+                static_cast<UINT32>(main_text.size()),
+                main_format,
+                main_layout_width,
+                main_layout_height,
+                &main_layout
+            );
+            if (FAILED(hr)) {
+                set_failure(L"CreateTextLayout(main)", hr);
+                break;
+            }
+            main_layout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+            main_layout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+            hr = main_layout->GetMetrics(&main_metrics);
+            if (FAILED(hr)) {
+                set_failure(L"GetMetrics(main)", hr);
+                break;
+            }
+        }
+
+        if (sub_text_present) {
+            hr = dwrite_factory_->CreateTextLayout(
+                sub_text.c_str(),
+                static_cast<UINT32>(sub_text.size()),
+                sub_format,
+                sub_layout_width,
+                sub_layout_height,
+                &sub_layout
+            );
+            if (FAILED(hr)) {
+                set_failure(L"CreateTextLayout(sub)", hr);
+                break;
+            }
+            sub_layout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+            sub_layout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+            hr = sub_layout->GetMetrics(&sub_metrics);
+            if (FAILED(hr)) {
+                set_failure(L"GetMetrics(sub)", hr);
+                break;
+            }
+        }
+
         d2d_context_->SetTarget(target_bitmap_);
         d2d_context_->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
         d2d_context_->BeginDraw();
@@ -614,63 +753,54 @@ bool TaskbarDCompRenderer::render(const TaskbarConfig& config, const TaskbarLyri
             d2d_context_->DrawLine(bottom_edge_start, bottom_edge_end, glass_bottom_edge_brush, 1.0f, nullptr);
         }
 
-        if (!main_text.empty()) {
-            d2d_context_->DrawText(
-                main_text.c_str(),
-                static_cast<UINT32>(main_text.size()),
-                main_format,
-                &main_glow,
-                glow_brush,
-                D2D1_DRAW_TEXT_OPTIONS_CLIP,
-                DWRITE_MEASURING_MODE_NATURAL
-            );
-            d2d_context_->DrawText(
-                main_text.c_str(),
-                static_cast<UINT32>(main_text.size()),
-                main_format,
-                &main_shadow,
-                shadow_brush,
-                D2D1_DRAW_TEXT_OPTIONS_CLIP,
-                DWRITE_MEASURING_MODE_NATURAL
-            );
-            d2d_context_->DrawText(
-                main_text.c_str(),
-                static_cast<UINT32>(main_text.size()),
-                main_format,
-                &main_rect,
-                main_brush,
-                D2D1_DRAW_TEXT_OPTIONS_CLIP,
-                DWRITE_MEASURING_MODE_NATURAL
-            );
-        }
+        const auto draw_text_layout_with_motion = [&](IDWriteTextLayout* layout, const DWRITE_TEXT_METRICS& metrics, const std::wstring& text, const D2D1_RECT_F& rect, float glow_offset_y, float shadow_offset_y, ID2D1Brush* text_brush, std::wstring* last_text, int* anchor_progress_ms) {
+            if (!layout || text.empty()) {
+                return;
+            }
+
+            const float available_width = std::max(1.0f, rect.right - rect.left);
+            const float content_width = std::max(metrics.widthIncludingTrailingWhitespace, metrics.width);
+            const bool overflow = content_width > available_width + 4.0f;
+            const float marquee_offset = overflow
+                ? resolve_marquee_offset(text, content_width, available_width, effective_progress_ms, last_text, anchor_progress_ms)
+                : 0.0f;
+            const float origin_x = overflow
+                ? (rect.left - marquee_offset)
+                : aligned_text_origin_x(config.align, rect.left, available_width, content_width);
+            const D2D1_POINT_2F text_origin = {origin_x, rect.top};
+            const D2D1_POINT_2F glow_origin = {origin_x, rect.top + glow_offset_y};
+            const D2D1_POINT_2F shadow_origin = {origin_x, rect.top + shadow_offset_y};
+
+            d2d_context_->PushAxisAlignedClip(rect, D2D1_ANTIALIAS_MODE_ALIASED);
+            d2d_context_->DrawTextLayout(glow_origin, layout, glow_brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            d2d_context_->DrawTextLayout(shadow_origin, layout, shadow_brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            d2d_context_->DrawTextLayout(text_origin, layout, text_brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            d2d_context_->PopAxisAlignedClip();
+        };
+
+        draw_text_layout_with_motion(
+            main_layout,
+            main_metrics,
+            main_text,
+            main_rect,
+            1.8f,
+            0.9f,
+            main_brush,
+            &last_main_marquee_text_,
+            &main_marquee_anchor_progress_ms_
+        );
 
         if (has_sub_text) {
-            d2d_context_->DrawText(
-                sub_text.c_str(),
-                static_cast<UINT32>(sub_text.size()),
-                sub_format,
-                &sub_glow,
-                glow_brush,
-                D2D1_DRAW_TEXT_OPTIONS_CLIP,
-                DWRITE_MEASURING_MODE_NATURAL
-            );
-            d2d_context_->DrawText(
-                sub_text.c_str(),
-                static_cast<UINT32>(sub_text.size()),
-                sub_format,
-                &sub_shadow,
-                shadow_brush,
-                D2D1_DRAW_TEXT_OPTIONS_CLIP,
-                DWRITE_MEASURING_MODE_NATURAL
-            );
-            d2d_context_->DrawText(
-                sub_text.c_str(),
-                static_cast<UINT32>(sub_text.size()),
-                sub_format,
-                &sub_rect,
+            draw_text_layout_with_motion(
+                sub_layout,
+                sub_metrics,
+                sub_text,
+                sub_rect,
+                1.2f,
+                0.7f,
                 sub_brush,
-                D2D1_DRAW_TEXT_OPTIONS_CLIP,
-                DWRITE_MEASURING_MODE_NATURAL
+                &last_sub_marquee_text_,
+                &sub_marquee_anchor_progress_ms_
             );
         }
 
@@ -728,6 +858,8 @@ bool TaskbarDCompRenderer::render(const TaskbarConfig& config, const TaskbarLyri
         success = true;
     } while (false);
 
+    safe_release(sub_layout);
+    safe_release(main_layout);
     safe_release(trimming_sign);
     safe_release(border_brush);
     safe_release(fill_brush);

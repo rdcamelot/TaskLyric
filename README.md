@@ -8,6 +8,19 @@ The goal is to render synchronized lyrics into the taskbar area in a native way,
 
 This project is in active development.
 
+## Recovery Baseline
+
+This recovery branch is intentionally pinned to `efb8867`, the earlier revision that was still broadly usable for lyric synchronization.
+
+It intentionally does not bring back the later self-healing and always-on launcher flow from `origin/main`, because that layer introduced most of the restart and reattach regressions.
+
+What is added on top of `efb8867` in this recovery branch is only:
+
+- a minimal native `tasklyric_launcher.exe` wrapper
+- a conservative desktop shortcut flow that launches Cloud Music and TaskLyric explicitly
+
+The recommended day-to-day entry on this branch is the desktop launcher shortcut, not the later always-on auto-recovery flow.
+
 What is already available:
 
 - a buildable host DLL skeleton
@@ -36,8 +49,6 @@ Build the native host:
 cmake -S . -B build -G "MinGW Makefiles"
 cmake --build build
 ```
-
-The build now also produces a native launcher stub `tasklyric_launcher.exe`, which starts the background launcher without a console window. Depending on the active CMake build folder, the executable is usually generated at `build\launcher\tasklyric_launcher.exe` or `build-tasklyric\launcher\tasklyric_launcher.exe`.
 
 Build the Windows media-session helper:
 
@@ -73,80 +84,43 @@ powershell -ExecutionPolicy Bypass -File scripts\launch_cloudmusic_with_debug.ps
 python main.py --remote-debug-port 9222
 ```
 
-Run TaskLyric in the background without opening a terminal window:
+Run TaskLyric with the minimal native launcher wrapper:
 
 ```powershell
-.\build\launcher\tasklyric_launcher.exe --remote-debug-port 9222
+build-tasklyric\launcher\tasklyric_launcher.exe --remote-debug-port 9222 --launch-cloudmusic --restart-cloudmusic-with-debug
 ```
 
-If PowerShell says `tasklyric_launcher.exe` is not recognized, use one of these forms instead:
+Install the simple Startup watcher:
 
 ```powershell
-.\build\launcher\tasklyric_launcher.exe --remote-debug-port 9222 --restart-cloudmusic-with-debug
-D:\code\TaskLyric\build\launcher\tasklyric_launcher.exe --remote-debug-port 9222 --restart-cloudmusic-with-debug
+powershell -ExecutionPolicy Bypass -File scripts\install_tasklyric_shortcut.ps1 -Startup
 ```
 
-This safer default no longer restarts a manually opened Cloud Music instance. TaskLyric will start only after the remote-debug target is actually ready.
+This creates `TaskLyric Background.lnk` in the Startup folder. It keeps a lightweight watcher running so that when NetEase Cloud Music starts, TaskLyric starts too.
 
-If you explicitly want TaskLyric to restart Cloud Music into debug mode for exact pause, seek, previous, and next synchronization, add:
+Wire the pinned NetEase taskbar shortcut through TaskLyric:
 
 ```powershell
---restart-cloudmusic-with-debug
+powershell -ExecutionPolicy Bypass -File scripts\install_tasklyric_shortcut.ps1 -TaskbarPinned
 ```
 
-Stop only the TaskLyric child process but keep the background launcher watcher alive:
+This rewrites the pinned NetEase Cloud Music shortcut in the taskbar so clicking the original taskbar icon launches Cloud Music and TaskLyric together through the stable recovery flow.
+
+If you want to restore the original pinned taskbar shortcut later, run:
 
 ```powershell
-python launcher.pyw --stop
+powershell -ExecutionPolicy Bypass -File scripts\restore_taskbar_shortcuts.ps1
 ```
 
-If you really want to stop both the watcher and TaskLyric, use:
+Uninstall the recovery-branch integration cleanly with:
 
 ```powershell
-python launcher.pyw --stop-all
+powershell -ExecutionPolicy Bypass -File scripts\uninstall_tasklyric.ps1
 ```
 
-After `--stop-all`, automatic startup is disabled until you launch the watcher again (or sign out and sign back in so the Startup shortcut runs again).
+This stops TaskLyric, removes the Startup watcher shortcut, removes the optional desktop shortcut, and restores any pinned NetEase taskbar shortcut that was routed through TaskLyric.
 
-Launching `launcher.pyw` repeatedly is now safe: only one launcher instance will stay alive.
-
-Create a product-style desktop launcher shortcut:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\install_tasklyric_shortcut.ps1 -Desktop -CleanupLegacyShortcuts
-```
-
-This creates `TaskLyric Launcher.lnk`. Double-clicking it starts the TaskLyric watcher without opening a terminal.
-
-Current behavior: `TaskLyric Launcher.lnk` starts the TaskLyric watcher only. It does not force-launch Cloud Music unless you explicitly install it with `-LaunchCloudMusic`.
-
-If you want one-click launch (Cloud Music + TaskLyric), recreate desktop shortcut with:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\install_tasklyric_shortcut.ps1 -Desktop -LaunchCloudMusic -CleanupLegacyShortcuts
-```
-
-Install a Startup shortcut so TaskLyric watches Cloud Music automatically after you sign in:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\install_tasklyric_shortcut.ps1 -Startup -CleanupLegacyShortcuts
-```
-
-This creates `TaskLyric Background.lnk` in the Startup folder. It watches `cloudmusic.exe`, starts TaskLyric only when NetEase Cloud Music is running, and stops it after Cloud Music exits.
-
-If you want your existing Cloud Music shortcuts (including pinned Taskbar shortcuts) to always start Cloud Music with a remote debug port, replace those shortcuts only:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\install_tasklyric_shortcut.ps1 -Desktop -ReplaceCloudMusicShortcut
-```
-
-This does not modify `cloudmusic.exe` itself. It rewrites matching `.lnk` shortcuts to launch `cloudmusic.exe --remote-debugging-port=9222`, and keeps backups with a `.tasklyric-backup` suffix. You can restore them with:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\restore_cloudmusic_shortcuts.ps1
-```
-
-The replacement now also includes your pinned Taskbar Cloud Music shortcut under your user profile. If some Start Menu shortcuts are under `C:\ProgramData`, replacing those may require running PowerShell as administrator.
+A separate desktop launcher is still available if you want it, but it is no longer the recommended default for this recovery branch.
 
 Run the development end-to-end replay flow:
 
@@ -196,13 +170,6 @@ Useful generated files:
 - `state/last-event.json`
 - `state/last-native-update.json`
 - `logs/tasklyric-host.log`
-- `logs/tasklyric-launcher.log`
-- `state/launcher-state.json`
-
-On this repo they are usually located at:
-
-- `D:\code\TaskLyric\logs\tasklyric-launcher.log`
-- `D:\code\TaskLyric\state\launcher-state.json`
 
 A successful replay should report a native window snapshot similar to:
 

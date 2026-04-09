@@ -56,6 +56,13 @@ private:
     IDCompositionVisual* dcomp_visual_ = nullptr;
     IDXGISwapChain1* swap_chain_ = nullptr;
     ID2D1Bitmap1* target_bitmap_ = nullptr;
+    std::wstring last_main_marquee_text_;
+    std::wstring last_sub_marquee_text_;
+    int main_marquee_anchor_progress_ms_ = 0;
+    int sub_marquee_anchor_progress_ms_ = 0;
+    int last_progress_sample_ms_ = 0;
+    ULONGLONG last_progress_sample_tick_ms_ = 0;
+    std::wstring last_playback_state_;
 };
 
 }  // namespace tasklyric::native
