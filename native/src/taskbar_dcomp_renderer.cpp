@@ -83,11 +83,36 @@ float aligned_text_origin_x(std::wstring_view align, float left, float available
     return left;
 }
 
+int resolve_effective_progress_ms(
+    const TaskbarLyricState& state,
+    ULONGLONG now_tick_ms,
+    int* last_sample_progress_ms,
+    ULONGLONG* last_sample_tick_ms,
+    std::wstring* last_playback_state
+) {
+    if (!last_sample_progress_ms || !last_sample_tick_ms || !last_playback_state) {
+        return state.progress_ms;
+    }
+
+    if (*last_sample_tick_ms == 0 || *last_sample_progress_ms != state.progress_ms || *last_playback_state != state.playback_state) {
+        *last_sample_progress_ms = state.progress_ms;
+        *last_sample_tick_ms = now_tick_ms;
+        *last_playback_state = state.playback_state;
+    }
+
+    int predicted_progress_ms = state.progress_ms;
+    if (_wcsicmp(state.playback_state.c_str(), L"playing") == 0 && *last_sample_tick_ms > 0) {
+        const ULONGLONG delta = now_tick_ms - *last_sample_tick_ms;
+        predicted_progress_ms += static_cast<int>(std::min<ULONGLONG>(delta, 500));
+    }
+    return predicted_progress_ms;
+}
+
 float resolve_marquee_offset(
     std::wstring_view text,
     float content_width,
     float available_width,
-    int progress_ms,
+    int effective_progress_ms,
     std::wstring* last_text,
     int* anchor_progress_ms
 ) {
@@ -96,14 +121,14 @@ float resolve_marquee_offset(
             *last_text = std::wstring(text);
         }
         if (anchor_progress_ms) {
-            *anchor_progress_ms = progress_ms;
+            *anchor_progress_ms = effective_progress_ms;
         }
         return 0.0f;
     }
 
-    if (*last_text != text || progress_ms + 400 < *anchor_progress_ms) {
+    if (*last_text != text || effective_progress_ms + 1800 < *anchor_progress_ms) {
         *last_text = std::wstring(text);
-        *anchor_progress_ms = progress_ms;
+        *anchor_progress_ms = effective_progress_ms;
         return 0.0f;
     }
 
@@ -112,20 +137,15 @@ float resolve_marquee_offset(
         return 0.0f;
     }
 
-    constexpr int kHoldStartMs = 700;
-    constexpr int kHoldEndMs = 500;
-    constexpr float kScrollPixelsPerSecond = 42.0f;
-    const int scroll_ms = std::max(1, static_cast<int>(std::ceil((overflow / kScrollPixelsPerSecond) * 1000.0f)));
-    const int cycle_ms = kHoldStartMs + scroll_ms + kHoldEndMs;
-    const int elapsed_ms = std::max(0, progress_ms - *anchor_progress_ms);
-    const int cycle_pos = cycle_ms > 0 ? (elapsed_ms % cycle_ms) : 0;
-    if (cycle_pos <= kHoldStartMs) {
+    constexpr int kHoldStartMs = 900;
+    constexpr float kScrollPixelsPerSecond = 30.0f;
+    const int elapsed_ms = std::max(0, effective_progress_ms - *anchor_progress_ms);
+    if (elapsed_ms <= kHoldStartMs) {
         return 0.0f;
     }
-    if (cycle_pos >= kHoldStartMs + scroll_ms) {
-        return overflow;
-    }
-    return std::min(overflow, static_cast<float>(cycle_pos - kHoldStartMs) * kScrollPixelsPerSecond / 1000.0f);
+
+    const float offset = static_cast<float>(elapsed_ms - kHoldStartMs) * kScrollPixelsPerSecond / 1000.0f;
+    return std::min(overflow, offset);
 }
 
 constexpr wchar_t kThemePersonalizeKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize";
@@ -467,10 +487,19 @@ bool TaskbarDCompRenderer::render(const TaskbarConfig& config, const TaskbarLyri
     const bool light_theme = config.theme_mode == L"light" || (config.theme_mode != L"dark" && system_uses_light_theme());
     const VisualPalette palette = resolve_palette(config);
     const DWRITE_TEXT_ALIGNMENT alignment = to_text_alignment(config.align);
-    const FLOAT main_font_size = static_cast<FLOAT>(std::clamp(config.font_size, 13, 36));
-    const FLOAT sub_font_size = static_cast<FLOAT>(std::max(12, config.font_size - 5));
+    const FLOAT base_main_font_size = static_cast<FLOAT>(std::clamp(config.font_size, 13, 36));
+    const FLOAT main_font_size = has_sub_text ? std::max(14.0f, base_main_font_size - 2.0f) : base_main_font_size;
+    const FLOAT sub_font_size = has_sub_text ? std::max(10.0f, main_font_size - 5.0f) : std::max(11.0f, base_main_font_size - 5.0f);
     const float width_f = static_cast<float>(width);
     const float height_f = static_cast<float>(height);
+    const ULONGLONG now_tick_ms = GetTickCount64();
+    const int effective_progress_ms = resolve_effective_progress_ms(
+        state,
+        now_tick_ms,
+        &last_progress_sample_ms_,
+        &last_progress_sample_tick_ms_,
+        &last_playback_state_
+    );
     const TaskbarControlLayout control_layout = compute_taskbar_control_layout(width, height);
     const float card_inset_x = debug_mode ? 0.0f : 8.0f;
     const float card_inset_y = debug_mode ? 0.0f : 7.0f;
@@ -482,16 +511,17 @@ bool TaskbarDCompRenderer::render(const TaskbarConfig& config, const TaskbarLyri
     const D2D1_ROUNDED_RECT glass_inner = {{glass_rect.rect.left + 1.0f, glass_rect.rect.top + 1.0f, glass_rect.rect.right - 1.0f, glass_rect.rect.bottom - 1.0f}, std::max(0.0f, card_radius - 1.0f), std::max(0.0f, card_radius - 1.0f)};
     const float text_inset_x = debug_mode ? 16.0f : (glass_rect.rect.left + 14.0f);
     const float text_right = control_layout.visible ? std::max(text_inset_x + 72.0f, static_cast<float>(control_layout.text_rect.right - 4)) : (width_f - text_inset_x);
-    const float top_anchor = debug_mode ? 5.0f : (glass_rect.rect.top + 4.5f);
-    const float bottom_anchor = debug_mode ? (height_f - 5.0f) : (glass_rect.rect.bottom - 4.5f);
-    const float main_top = has_sub_text ? top_anchor : std::max(top_anchor, ((top_anchor + bottom_anchor - (main_font_size + 8.0f)) * 0.5f) - 0.5f);
-    const float main_bottom = has_sub_text ? (main_top + main_font_size + 5.0f) : (main_top + main_font_size + 8.0f);
-    const D2D1_RECT_F main_rect = {text_inset_x, main_top, text_right, main_bottom};
-    const D2D1_RECT_F sub_rect = {text_inset_x, has_sub_text ? (main_bottom - 0.25f) : 0.0f, text_right, has_sub_text ? bottom_anchor : 0.0f};
-    const D2D1_RECT_F main_glow = {main_rect.left, main_rect.top + 1.8f, main_rect.right, main_rect.bottom + 1.8f};
-    const D2D1_RECT_F main_shadow = {main_rect.left, main_rect.top + 0.9f, main_rect.right, main_rect.bottom + 0.9f};
-    const D2D1_RECT_F sub_glow = {sub_rect.left, sub_rect.top + 1.2f, sub_rect.right, sub_rect.bottom + 1.2f};
-    const D2D1_RECT_F sub_shadow = {sub_rect.left, sub_rect.top + 0.7f, sub_rect.right, sub_rect.bottom + 0.7f};
+    const float content_top = debug_mode ? 5.0f : (glass_rect.rect.top + 5.0f);
+    const float content_bottom = debug_mode ? (height_f - 5.0f) : (glass_rect.rect.bottom - 4.0f);
+    const float content_height = std::max(18.0f, content_bottom - content_top);
+    const float sub_band_height = has_sub_text ? std::max(sub_font_size + 3.0f, content_height * 0.38f) : 0.0f;
+    const float main_band_bottom = has_sub_text ? std::max(content_top + 10.0f, content_bottom - sub_band_height + 1.0f) : content_bottom;
+    const D2D1_RECT_F main_rect = {text_inset_x, content_top - 0.5f, text_right, has_sub_text ? main_band_bottom : content_bottom};
+    const D2D1_RECT_F sub_rect = {text_inset_x, has_sub_text ? (main_band_bottom - 1.5f) : 0.0f, text_right, has_sub_text ? (content_bottom + 1.0f) : 0.0f};
+    const D2D1_RECT_F main_glow = {main_rect.left, main_rect.top + 1.6f, main_rect.right, main_rect.bottom + 1.6f};
+    const D2D1_RECT_F main_shadow = {main_rect.left, main_rect.top + 0.8f, main_rect.right, main_rect.bottom + 0.8f};
+    const D2D1_RECT_F sub_glow = {sub_rect.left, sub_rect.top + 1.0f, sub_rect.right, sub_rect.bottom + 1.0f};
+    const D2D1_RECT_F sub_shadow = {sub_rect.left, sub_rect.top + 0.55f, sub_rect.right, sub_rect.bottom + 0.55f};
     const D2D1_POINT_2F top_highlight_start = {glass_rect.rect.left + 14.0f, glass_rect.rect.top + 1.25f};
     const D2D1_POINT_2F top_highlight_end = {glass_rect.rect.right - 14.0f, glass_rect.rect.top + 1.25f};
     const D2D1_POINT_2F bottom_edge_start = {glass_rect.rect.left + 13.0f, glass_rect.rect.bottom - 1.15f};
@@ -732,7 +762,7 @@ bool TaskbarDCompRenderer::render(const TaskbarConfig& config, const TaskbarLyri
             const float content_width = std::max(metrics.widthIncludingTrailingWhitespace, metrics.width);
             const bool overflow = content_width > available_width + 4.0f;
             const float marquee_offset = overflow
-                ? resolve_marquee_offset(text, content_width, available_width, state.progress_ms, last_text, anchor_progress_ms)
+                ? resolve_marquee_offset(text, content_width, available_width, effective_progress_ms, last_text, anchor_progress_ms)
                 : 0.0f;
             const float origin_x = overflow
                 ? (rect.left - marquee_offset)
