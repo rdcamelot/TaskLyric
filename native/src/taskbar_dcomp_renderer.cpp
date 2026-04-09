@@ -424,7 +424,11 @@ bool TaskbarDCompRenderer::render(const TaskbarConfig& config, const TaskbarLyri
     const float text_right = control_layout.visible ? std::max(text_inset_x + 72.0f, static_cast<float>(control_layout.text_rect.right - 4)) : (width_f - text_inset_x);
     const float top_anchor = debug_mode ? 5.0f : (glass_rect.rect.top + 4.5f);
     const float bottom_anchor = debug_mode ? (height_f - 5.0f) : (glass_rect.rect.bottom - 4.5f);
-    const float main_top = has_sub_text ? top_anchor : std::max(top_anchor, ((top_anchor + bottom_anchor - (main_font_size + 8.0f)) * 0.5f) - 0.5f);
+    const float two_line_height = main_font_size + sub_font_size + 6.0f;
+    const float centered_two_line_top = top_anchor + std::max(0.0f, ((bottom_anchor - top_anchor) - two_line_height) * 0.5f);
+    const float main_top = has_sub_text
+        ? centered_two_line_top
+        : std::max(top_anchor, ((top_anchor + bottom_anchor - (main_font_size + 8.0f)) * 0.5f) - 0.5f);
     const float main_bottom = has_sub_text ? (main_top + main_font_size + 5.0f) : (main_top + main_font_size + 8.0f);
     const D2D1_RECT_F main_rect = {text_inset_x, main_top, text_right, main_bottom};
     const D2D1_RECT_F sub_rect = {text_inset_x, has_sub_text ? (main_bottom - 0.25f) : 0.0f, text_right, has_sub_text ? bottom_anchor : 0.0f};

@@ -11,8 +11,18 @@ import time
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DLL_PATH = ROOT / "build" / "host" / "tasklyric_host.dll"
+DLL_CANDIDATES = (
+    ROOT / "build-tasklyric" / "host" / "tasklyric_host.dll",
+    ROOT / "build" / "host" / "tasklyric_host.dll",
+)
 TRANSCRIPT_PATH = ROOT / "state" / "runtime-dev-transcript.json"
+
+
+def resolve_dll_path() -> Path | None:
+    for candidate in DLL_CANDIDATES:
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def add_mingw_runtime_dir() -> None:
@@ -36,11 +46,13 @@ def add_mingw_runtime_dir() -> None:
 
 
 def load_dll():
-    if not DLL_PATH.exists():
-        raise FileNotFoundError(f"missing dll: {DLL_PATH}")
+    dll_path = resolve_dll_path()
+    if dll_path is None:
+        joined = ", ".join(str(path) for path in DLL_CANDIDATES)
+        raise FileNotFoundError(f"missing dll: {joined}")
 
     add_mingw_runtime_dir()
-    dll = ctypes.WinDLL(str(DLL_PATH))
+    dll = ctypes.WinDLL(str(dll_path))
     dll.tasklyric_initialize.argtypes = [ctypes.c_wchar_p]
     dll.tasklyric_initialize.restype = ctypes.c_int
     dll.tasklyric_shutdown.argtypes = []

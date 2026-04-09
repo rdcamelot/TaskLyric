@@ -37,7 +37,7 @@ cmake -S . -B build -G "MinGW Makefiles"
 cmake --build build
 ```
 
-The build now also produces a native launcher stub `tasklyric_launcher.exe`, which starts the background launcher without a console window. In a clean build directory used in this repo, the executable is usually generated at `build-tasklyric\launcher\tasklyric_launcher.exe`.
+The build now also produces a native launcher stub `tasklyric_launcher.exe`, which starts the background launcher without a console window. Depending on the active CMake build folder, the executable is usually generated at `build\launcher\tasklyric_launcher.exe` or `build-tasklyric\launcher\tasklyric_launcher.exe`.
 
 Build the Windows media-session helper:
 
@@ -76,14 +76,14 @@ python main.py --remote-debug-port 9222
 Run TaskLyric in the background without opening a terminal window:
 
 ```powershell
-.\build-tasklyric\launcher\tasklyric_launcher.exe --remote-debug-port 9222
+.\build\launcher\tasklyric_launcher.exe --remote-debug-port 9222
 ```
 
 If PowerShell says `tasklyric_launcher.exe` is not recognized, use one of these forms instead:
 
 ```powershell
-.\build-tasklyric\launcher\tasklyric_launcher.exe --remote-debug-port 9222 --restart-cloudmusic-with-debug
-D:\code\TaskLyric\build-tasklyric\launcher\tasklyric_launcher.exe --remote-debug-port 9222 --restart-cloudmusic-with-debug
+.\build\launcher\tasklyric_launcher.exe --remote-debug-port 9222 --restart-cloudmusic-with-debug
+D:\code\TaskLyric\build\launcher\tasklyric_launcher.exe --remote-debug-port 9222 --restart-cloudmusic-with-debug
 ```
 
 This safer default no longer restarts a manually opened Cloud Music instance. TaskLyric will start only after the remote-debug target is actually ready.

@@ -10,7 +10,7 @@
     shadowColor: "#05070B",
     themeMode: "auto",
     align: "center",
-    enableControls: false
+    enableControls: true
   };
 
   var LOADING_TEXT = "\u6b4c\u8bcd\u52a0\u8f7d\u4e2d";
