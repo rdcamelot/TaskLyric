@@ -140,12 +140,13 @@ if ($TaskbarPinned) {
     if (-not $taskbarLinks) {
         Write-Warning 'No pinned Cloud Music taskbar shortcut was found.'
     }
+    if (-not $cloudMusicExe) {
+        throw 'cloudmusic.exe was not found, so the pinned taskbar shortcut cannot be updated safely.'
+    }
     foreach ($shortcutFile in $taskbarLinks) {
         Backup-ShortcutIfNeeded -LinkPath $shortcutFile.FullName
-        $arguments = @($baseArguments)
-        $arguments += '--launch-cloudmusic'
-        $arguments += '--restart-cloudmusic-with-debug'
-        Set-Shortcut -LinkPath $shortcutFile.FullName -TargetPath $targetPath -Arguments $arguments -WorkingDirectory $root -IconLocation $iconLocation -Description 'Launch NetEase Cloud Music with TaskLyric from the pinned taskbar shortcut.'
+        $arguments = @("--remote-debugging-port=$Port")
+        Set-Shortcut -LinkPath $shortcutFile.FullName -TargetPath $cloudMusicExe -Arguments $arguments -WorkingDirectory (Split-Path -Parent $cloudMusicExe) -IconLocation $iconLocation -Description 'Launch NetEase Cloud Music with the remote debug port required by TaskLyric.'
         Write-Host "Updated pinned taskbar shortcut: $($shortcutFile.FullName)"
     }
 }

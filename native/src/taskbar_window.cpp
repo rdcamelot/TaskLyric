@@ -491,7 +491,7 @@ void TaskbarWindow::thread_main() {
     }
 
     ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-    SetTimer(hwnd, kLayoutTimerId, 800, nullptr);
+    SetTimer(hwnd, kLayoutTimerId, 250, nullptr);
     refresh_window();
 
     MSG message{};
