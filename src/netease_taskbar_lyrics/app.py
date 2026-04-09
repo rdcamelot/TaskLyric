@@ -54,6 +54,8 @@ class TaskbarLyricsApp:
         self._translation_timeline: LyricTimeline | None = None
         self._resolved_song_id = 0
         self._last_payload_key: tuple[str, ...] | None = None
+        self._has_seen_cloudmusic = False
+        self._missing_cloudmusic_since = 0.0
 
     def start(self) -> None:
         self.bridge.start()
@@ -76,6 +78,7 @@ class TaskbarLyricsApp:
                 self._drain_lyric_queue()
                 self._drain_control_queue()
                 self._refresh_display()
+                self._maybe_auto_stop_after_cloudmusic_exit()
                 self._stop_event.wait(self.tick_interval_ms / 1000)
         finally:
             self.stop()
@@ -125,6 +128,8 @@ class TaskbarLyricsApp:
 
         previous_track = self._active_track_key
         self._active_session = latest_session
+        self._has_seen_cloudmusic = True
+        self._missing_cloudmusic_since = 0.0
         self._active_track_key = _track_key(latest_session)
 
         if self._active_track_key != previous_track:
@@ -292,6 +297,27 @@ class TaskbarLyricsApp:
             playback_state=playback_state,
             track_id=self._resolved_song_id or session.song_id,
         )
+
+    def _maybe_auto_stop_after_cloudmusic_exit(self) -> None:
+        if self.provider.has_cloudmusic_activity():
+            self._has_seen_cloudmusic = True
+            self._missing_cloudmusic_since = 0.0
+            return
+        if not self._has_seen_cloudmusic:
+            return
+
+        now = time.monotonic()
+        if self._missing_cloudmusic_since <= 0:
+            self._missing_cloudmusic_since = now
+            return
+        if now - self._missing_cloudmusic_since < AUTO_STOP_ABSENCE_SECONDS:
+            return
+
+        self.bridge.emit_event(
+            "tasklyric.live.auto_stop",
+            {"reason": "cloudmusic-inactive", "graceSeconds": AUTO_STOP_ABSENCE_SECONDS},
+        )
+        self._stop_event.set()
 
     def _publish_display(
         self,

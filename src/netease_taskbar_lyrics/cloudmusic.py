@@ -166,6 +166,9 @@ class CloudMusicWindowProbe:
             source_window_title=candidate.title if candidate else "",
         )
 
+    def has_player_window(self) -> bool:
+        return self._pick_control_window(self._enumerate_cloudmusic_windows()) is not None
+
     def send_media_command(self, action: str) -> bool:
         normalized = action.strip().lower()
         app_command = ACTION_TO_APPCOMMAND.get(normalized)

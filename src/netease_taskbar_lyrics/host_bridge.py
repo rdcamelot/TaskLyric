@@ -9,21 +9,22 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[2]
+CONFIG_PATH = ROOT / "config" / "tasklyric.config.json"
 DLL_CANDIDATES = (
+    ROOT / "build" / "host" / "tasklyric_host.dll",
+    ROOT / "build-tasklyric" / "host" / "tasklyric_host.dll",
     ROOT / "build-marquee" / "host" / "tasklyric_host.dll",
     ROOT / "build-smooth" / "host" / "tasklyric_host.dll",
     ROOT / "build-stable" / "host" / "tasklyric_host.dll",
     ROOT / "build-anim2" / "host" / "tasklyric_host.dll",
     ROOT / "build-anim" / "host" / "tasklyric_host.dll",
     ROOT / "build-hotfix" / "host" / "tasklyric_host.dll",
-    ROOT / "build-tasklyric" / "host" / "tasklyric_host.dll",
-    ROOT / "build" / "host" / "tasklyric_host.dll",
 )
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "showTranslation": True,
     "fontFamily": "Segoe UI Variable Text",
-    "fontSize": 18,
+    "fontSize": 19,
     "color": "#F8FAFC",
     "subColor": "#AEB8C5",
     "shadowColor": "#05070B",
@@ -32,10 +33,23 @@ DEFAULT_CONFIG: dict[str, Any] = {
 }
 
 
+def _load_file_config() -> dict[str, Any]:
+    try:
+        raw = CONFIG_PATH.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
 class HostTaskbarBridge:
     def __init__(self, config: dict[str, Any] | None = None) -> None:
         self.root = ROOT
         self.config = dict(DEFAULT_CONFIG)
+        self.config.update(_load_file_config())
         if config:
             self.config.update(config)
         self._dll = self._load_dll()

@@ -11,10 +11,13 @@ from typing import Iterable
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
+from .cloudmusic import CloudMusicWindowProbe
+
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_REMOTE_DEBUG_PORT = 9222
 DEFAULT_POLL_INTERVAL_SECONDS = 1.0
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+_WINDOW_PROBE = CloudMusicWindowProbe()
 
 
 def _stop_tasklyric_python_processes(*, include_launcher: bool = True) -> bool:
@@ -90,6 +93,13 @@ def cloudmusic_process_ids() -> list[int]:
 
 def is_cloudmusic_running() -> bool:
     return bool(cloudmusic_process_ids())
+
+
+def has_cloudmusic_window() -> bool:
+    try:
+        return _WINDOW_PROBE.has_player_window()
+    except Exception:
+        return False
 
 
 def find_cloudmusic_executable() -> Path | None:
@@ -178,6 +188,7 @@ class TaskLyricBackgroundLauncher:
         self._tasklyric_process: subprocess.Popen[str] | None = None
         self._launched_cloudmusic = False
         self._last_restart_attempt = 0.0
+        self._startup_grace_until = 0.0
 
     def run(self) -> None:
         try:
@@ -190,27 +201,34 @@ class TaskLyricBackgroundLauncher:
             self._stop_tasklyric()
 
     def _tick(self) -> None:
-        running = is_cloudmusic_running()
+        process_running = is_cloudmusic_running()
+        remote_ready = remote_debug_available(self.remote_debug_port)
+        window_ready = has_cloudmusic_window()
+        now = time.monotonic()
+        running = process_running and (remote_ready or window_ready or now < self._startup_grace_until)
 
-        if self.launch_cloudmusic and not running and not self._launched_cloudmusic:
+        if self.launch_cloudmusic and not process_running and not self._launched_cloudmusic:
             if launch_cloudmusic_with_debug(self.remote_debug_port):
                 self._launched_cloudmusic = True
+                self._startup_grace_until = time.monotonic() + 12.0
+                process_running = True
                 running = True
 
-        if running and self.restart_with_debug and not remote_debug_available(self.remote_debug_port):
-            now = time.monotonic()
+        if process_running and self.restart_with_debug and window_ready and not remote_ready:
             if now - self._last_restart_attempt >= 8.0:
                 self._last_restart_attempt = now
                 stop_cloudmusic()
                 time.sleep(0.8)
                 if launch_cloudmusic_with_debug(self.remote_debug_port):
                     self._launched_cloudmusic = True
+                    self._startup_grace_until = time.monotonic() + 12.0
                 running = True
 
         if running:
             self._ensure_tasklyric_running()
         else:
             self._launched_cloudmusic = False
+            self._startup_grace_until = 0.0
             self._stop_tasklyric()
 
     def _ensure_tasklyric_running(self) -> None:

@@ -488,8 +488,8 @@ bool TaskbarDCompRenderer::render(const TaskbarConfig& config, const TaskbarLyri
     const VisualPalette palette = resolve_palette(config);
     const DWRITE_TEXT_ALIGNMENT alignment = to_text_alignment(config.align);
     const FLOAT base_main_font_size = static_cast<FLOAT>(std::clamp(config.font_size, 13, 36));
-    const FLOAT main_font_size = has_sub_text ? std::max(14.0f, base_main_font_size - 2.0f) : base_main_font_size;
-    const FLOAT sub_font_size = has_sub_text ? std::max(10.0f, main_font_size - 5.0f) : std::max(11.0f, base_main_font_size - 5.0f);
+    const FLOAT main_font_size = has_sub_text ? std::max(15.0f, base_main_font_size - 1.0f) : base_main_font_size;
+    const FLOAT sub_font_size = has_sub_text ? std::max(12.0f, main_font_size - 3.5f) : std::max(12.0f, base_main_font_size - 4.0f);
     const float width_f = static_cast<float>(width);
     const float height_f = static_cast<float>(height);
     const ULONGLONG now_tick_ms = GetTickCount64();
@@ -514,10 +514,10 @@ bool TaskbarDCompRenderer::render(const TaskbarConfig& config, const TaskbarLyri
     const float content_top = debug_mode ? 5.0f : (glass_rect.rect.top + 5.0f);
     const float content_bottom = debug_mode ? (height_f - 5.0f) : (glass_rect.rect.bottom - 4.0f);
     const float content_height = std::max(18.0f, content_bottom - content_top);
-    const float sub_band_height = has_sub_text ? std::max(sub_font_size + 3.0f, content_height * 0.38f) : 0.0f;
-    const float main_band_bottom = has_sub_text ? std::max(content_top + 10.0f, content_bottom - sub_band_height + 1.0f) : content_bottom;
+    const float sub_band_height = has_sub_text ? std::max(sub_font_size + 4.5f, content_height * 0.40f) : 0.0f;
+    const float main_band_bottom = has_sub_text ? std::max(content_top + 10.0f, content_bottom - sub_band_height + 1.5f) : content_bottom;
     const D2D1_RECT_F main_rect = {text_inset_x, content_top - 0.5f, text_right, has_sub_text ? main_band_bottom : content_bottom};
-    const D2D1_RECT_F sub_rect = {text_inset_x, has_sub_text ? (main_band_bottom - 1.5f) : 0.0f, text_right, has_sub_text ? (content_bottom + 1.0f) : 0.0f};
+    const D2D1_RECT_F sub_rect = {text_inset_x, has_sub_text ? (main_band_bottom - 0.5f) : 0.0f, text_right, has_sub_text ? (content_bottom + 1.5f) : 0.0f};
     const D2D1_RECT_F main_glow = {main_rect.left, main_rect.top + 1.6f, main_rect.right, main_rect.bottom + 1.6f};
     const D2D1_RECT_F main_shadow = {main_rect.left, main_rect.top + 0.8f, main_rect.right, main_rect.bottom + 0.8f};
     const D2D1_RECT_F sub_glow = {sub_rect.left, sub_rect.top + 1.0f, sub_rect.right, sub_rect.bottom + 1.0f};

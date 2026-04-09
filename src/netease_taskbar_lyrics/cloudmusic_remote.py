@@ -14,6 +14,8 @@ import websocket
 REMOTE_DEBUG_SOURCE = "cloudmusic.remote-debug"
 BINDING_NAME = "tasklyricDispatch"
 _TARGET_URL_KEYWORDS = ("orpheus", "cloudmusic", "app.html", "subapp.html")
+_REMOTE_BOOTSTRAP_GRACE_SECONDS = 4.0
+_REMOTE_PLAYING_STALE_SECONDS = 4.5
 
 
 @dataclass(frozen=True)
@@ -27,6 +29,7 @@ class CloudMusicRemoteState:
     fetched_at: float = 0.0
     debugger_url: str = ""
     page_title: str = ""
+    connected_at: float = 0.0
 
 
 class CloudMusicRemoteBridge:
@@ -48,7 +51,29 @@ class CloudMusicRemoteBridge:
         self._ensure_started()
         with self._lock:
             state = self._state
-        return state if state.connected else None
+        if not state.connected:
+            return None
+
+        now = time.monotonic()
+        if state.debugger_url and not self._debugger_target_available(state.debugger_url):
+            self._invalidate_connection()
+            return None
+
+        if not self._has_meaningful_state(state):
+            if state.connected_at > 0 and now - state.connected_at >= _REMOTE_BOOTSTRAP_GRACE_SECONDS:
+                self._invalidate_connection()
+            return None
+
+        if _is_playing_state(state.playback_status) and state.fetched_at > 0 and now - state.fetched_at >= _REMOTE_PLAYING_STALE_SECONDS:
+            self._invalidate_connection()
+            return None
+
+        return state
+
+    def has_target(self) -> bool:
+        if self._port <= 0:
+            return False
+        return bool(self._load_targets())
 
     def send_control(self, action: str) -> bool:
         normalized = action.strip().lower()
@@ -121,6 +146,7 @@ class CloudMusicRemoteBridge:
                     connected=True,
                     debugger_url=ws_url,
                     page_title=str(target.get("title") or ""),
+                    connected_at=time.monotonic(),
                 )
 
             try:
@@ -216,6 +242,7 @@ class CloudMusicRemoteBridge:
                     fetched_at=now,
                     debugger_url=state.debugger_url,
                     page_title=state.page_title,
+                    connected_at=state.connected_at,
                 )
             return
 
@@ -246,6 +273,7 @@ class CloudMusicRemoteBridge:
                     fetched_at=now,
                     debugger_url=state.debugger_url,
                     page_title=state.page_title,
+                    connected_at=state.connected_at,
                 )
             return
 
@@ -267,6 +295,7 @@ class CloudMusicRemoteBridge:
                     fetched_at=now if playback_status != state.playback_status else state.fetched_at,
                     debugger_url=state.debugger_url,
                     page_title=state.page_title,
+                    connected_at=state.connected_at,
                 )
             return
 
@@ -290,6 +319,7 @@ class CloudMusicRemoteBridge:
                     fetched_at=now,
                     debugger_url=state.debugger_url,
                     page_title=state.page_title,
+                    connected_at=state.connected_at,
                 )
             return
 
@@ -308,25 +338,25 @@ class CloudMusicRemoteBridge:
                     fetched_at=state.fetched_at,
                     debugger_url=state.debugger_url,
                     page_title=state.page_title,
+                    connected_at=state.connected_at,
                 )
 
-    def _discover_target(self) -> dict[str, Any] | None:
+    def _load_targets(self) -> list[dict[str, Any]]:
         if self._port <= 0:
-            return None
+            return []
         url = f"http://127.0.0.1:{self._port}/json/list"
         try:
             with urllib_request.urlopen(url, timeout=1.5) as response:
                 payload = json.loads(response.read().decode("utf-8"))
         except (OSError, urllib_error.URLError, TimeoutError, json.JSONDecodeError):
-            return None
-
+            return []
         if not isinstance(payload, list):
-            return None
+            return []
+        return [item for item in payload if isinstance(item, dict)]
 
+    def _discover_target(self) -> dict[str, Any] | None:
         candidates: list[tuple[int, dict[str, Any]]] = []
-        for item in payload:
-            if not isinstance(item, dict):
-                continue
+        for item in self._load_targets():
             ws_url = str(item.get("webSocketDebuggerUrl") or "").strip()
             if not ws_url:
                 continue
@@ -347,6 +377,32 @@ class CloudMusicRemoteBridge:
             return None
         candidates.sort(key=lambda row: row[0], reverse=True)
         return candidates[0][1]
+
+    @staticmethod
+    def _has_meaningful_state(state: CloudMusicRemoteState) -> bool:
+        if state.play_id or state.song_id > 0 or state.position_ms > 0:
+            return True
+        return state.playback_status.strip().lower() not in {"", "unknown"}
+
+    def _debugger_target_available(self, debugger_url: str) -> bool:
+        if not debugger_url:
+            return False
+        for item in self._load_targets():
+            ws_url = str(item.get("webSocketDebuggerUrl") or "").strip()
+            if ws_url == debugger_url:
+                return True
+        return False
+
+    def _invalidate_connection(self) -> None:
+        with self._lock:
+            ws = self._ws
+            self._ws = None
+        self._set_disconnected()
+        if ws is not None:
+            try:
+                ws.close()
+            except OSError:
+                pass
 
     def _window_channel_call(self, command: str, *args: Any) -> dict[str, Any]:
         expression = _channel_call_expression(command, list(args))
@@ -460,6 +516,7 @@ class CloudMusicRemoteBridge:
                     fetched_at=time.monotonic(),
                     debugger_url=state.debugger_url,
                     page_title=state.page_title,
+                    connected_at=state.connected_at,
                 )
         return True
 

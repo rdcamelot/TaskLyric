@@ -201,6 +201,11 @@ class MediaSessionProvider:
         self._remote.shutdown()
         self._helper.shutdown()
 
+    def has_cloudmusic_activity(self) -> bool:
+        if self._remote.has_target():
+            return True
+        return self._window_probe.has_player_window()
+
     def get_current_session(self) -> MediaSessionSnapshot | None:
         remote_session = self._get_remote_session()
         if remote_session is not None:

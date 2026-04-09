@@ -237,7 +237,7 @@ std::wstring rect_json(const RECT& rect) {
 
 }  // namespace
 
-TaskbarControlLayout compute_taskbar_control_layout(UINT width, UINT height) {
+TaskbarControlLayout compute_taskbar_control_layout(UINT width, UINT height, UINT task_list_right) {
     TaskbarControlLayout layout{};
     layout.text_rect = {0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
 
@@ -250,7 +250,7 @@ TaskbarControlLayout compute_taskbar_control_layout(UINT width, UINT height) {
     const int total_width = (kControlButtonSize * 3) + (kControlButtonGap * 2);
     const int group_right = width_i - kControlRightInset;
     const int group_left = group_right - total_width;
-    if (group_left <= 160) {
+    if (group_left <= static_cast<int>(task_list_right)) {
         return layout;
     }
 
