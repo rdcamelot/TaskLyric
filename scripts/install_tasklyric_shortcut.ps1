@@ -117,11 +117,11 @@ foreach ($target in $targets) {
         if ($LaunchCloudMusic) {
             $arguments += '--launch-cloudmusic'
         }
-        if ($RestartCloudMusicWithDebug) {
+        if ($RestartCloudMusicWithDebug -or -not $PSBoundParameters.ContainsKey('RestartCloudMusicWithDebug')) {
             $arguments += '--restart-cloudmusic-with-debug'
         }
         $linkName = 'TaskLyric Background.lnk'
-        $description = 'Watch Cloud Music and start TaskLyric when it is running.'
+        $description = 'Watch Cloud Music and keep TaskLyric attached to a remote-debug-enabled player instance.'
     } else {
         $arguments = @($baseArguments)
         $arguments += '--launch-cloudmusic'

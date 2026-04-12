@@ -31,10 +31,16 @@ constexpr int kPaddingY = 6;
 constexpr int kAnchorGap = 6;
 constexpr int kControlButtonSize = 24;
 constexpr int kControlButtonGap = 5;
+constexpr int kControlCompactButtonSize = 21;
+constexpr int kControlCompactButtonGap = 3;
 constexpr int kControlHitPadding = 5;
 constexpr int kControlRightInset = 16;
+constexpr int kControlCompactRightInset = 12;
 constexpr int kControlMinWidth = 360;
+constexpr int kControlCompactMinWidth = 290;
 constexpr int kControlTextGap = 12;
+constexpr int kControlCompactTextGap = 8;
+constexpr int kControlCompactMinTextWidth = 92;
 
 void append_debug_line(const wchar_t* line) {
     const std::filesystem::path path = std::filesystem::current_path() / "logs" / "tasklyric-window.log";
@@ -243,23 +249,29 @@ TaskbarControlLayout compute_taskbar_control_layout(UINT width, UINT height, UIN
 
     const int width_i = static_cast<int>(width);
     const int height_i = static_cast<int>(height);
-    if (width_i < kControlMinWidth || height_i < 34) {
+    if (height_i < 34 || width_i < kControlCompactMinWidth) {
         return layout;
     }
 
-    const int total_width = (kControlButtonSize * 3) + (kControlButtonGap * 2);
-    const int group_right = width_i - kControlRightInset;
+    const bool compact = width_i < kControlMinWidth;
+    const int button_size = compact ? kControlCompactButtonSize : kControlButtonSize;
+    const int button_gap = compact ? kControlCompactButtonGap : kControlButtonGap;
+    const int right_inset = compact ? kControlCompactRightInset : kControlRightInset;
+    const int text_gap = compact ? kControlCompactTextGap : kControlTextGap;
+    const int min_text_width = compact ? kControlCompactMinTextWidth : static_cast<int>(task_list_right);
+    const int total_width = (button_size * 3) + (button_gap * 2);
+    const int group_right = width_i - right_inset;
     const int group_left = group_right - total_width;
-    if (group_left <= static_cast<int>(task_list_right)) {
+    if (group_left <= min_text_width) {
         return layout;
     }
 
-    const int top = std::max(6, (height_i - kControlButtonSize) / 2);
+    const int top = std::max(compact ? 5 : 6, (height_i - button_size) / 2);
     layout.visible = true;
-    layout.previous_rect = {group_left, top, group_left + kControlButtonSize, top + kControlButtonSize};
-    layout.toggle_rect = {layout.previous_rect.right + kControlButtonGap, top, layout.previous_rect.right + kControlButtonGap + kControlButtonSize, top + kControlButtonSize};
-    layout.next_rect = {layout.toggle_rect.right + kControlButtonGap, top, layout.toggle_rect.right + kControlButtonGap + kControlButtonSize, top + kControlButtonSize};
-    layout.text_rect = {0, 0, layout.previous_rect.left - kControlTextGap, height_i};
+    layout.previous_rect = {group_left, top, group_left + button_size, top + button_size};
+    layout.toggle_rect = {layout.previous_rect.right + button_gap, top, layout.previous_rect.right + button_gap + button_size, top + button_size};
+    layout.next_rect = {layout.toggle_rect.right + button_gap, top, layout.toggle_rect.right + button_gap + button_size, top + button_size};
+    layout.text_rect = RECT{0, 0, static_cast<LONG>(std::max(0L, layout.previous_rect.left - static_cast<LONG>(text_gap))), static_cast<LONG>(height_i)};
     return layout;
 }
 
