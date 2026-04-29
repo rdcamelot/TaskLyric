@@ -211,6 +211,9 @@ class MediaSessionProvider:
         if remote_session is not None:
             self._reset_fallback_progress()
             return remote_session
+        if self._remote.has_target():
+            self._reset_fallback_progress()
+            return None
 
         helper_session = self._helper.get_current_session()
         if helper_session and self._looks_like_netease_session(helper_session):

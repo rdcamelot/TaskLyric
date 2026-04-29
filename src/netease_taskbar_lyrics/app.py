@@ -14,6 +14,7 @@ from .smtc import MediaSessionProvider, MediaSessionSnapshot
 
 DEFAULT_POLL_INTERVAL_SECONDS = 1.2
 DEFAULT_TICK_INTERVAL_MS = 150
+AUTO_STOP_ABSENCE_SECONDS = 5.0
 WAITING_TEXT = "等待网易云音乐开始播放"
 LOADING_PREFIX = "正在加载歌词"
 STOPPED_SUBTEXT = "TaskLyric"
@@ -56,6 +57,7 @@ class TaskbarLyricsApp:
         self._last_payload_key: tuple[str, ...] | None = None
         self._has_seen_cloudmusic = False
         self._missing_cloudmusic_since = 0.0
+        self._shutdown_complete = False
 
     def start(self) -> None:
         self.bridge.start()
@@ -84,9 +86,11 @@ class TaskbarLyricsApp:
             self.stop()
 
     def stop(self) -> None:
-        if self._stop_event.is_set():
+        if not self._stop_event.is_set():
+            self._stop_event.set()
+        if self._shutdown_complete:
             return
-        self._stop_event.set()
+        self._shutdown_complete = True
         self.provider.shutdown()
         self.bridge.emit_event("tasklyric.live.stopped", {})
         self.bridge.shutdown()

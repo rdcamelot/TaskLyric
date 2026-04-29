@@ -64,6 +64,24 @@ class CloudMusicRemoteBridge:
                 self._invalidate_connection()
             return None
 
+        dom_status = self._query_player_playback_status()
+        if dom_status != "Unknown" and dom_status != state.playback_status:
+            with self._lock:
+                current = self._state
+                self._state = CloudMusicRemoteState(
+                    connected=current.connected,
+                    play_id=current.play_id,
+                    resume_or_pause_id=current.resume_or_pause_id,
+                    song_id=current.song_id,
+                    position_ms=current.position_ms,
+                    playback_status=dom_status,
+                    fetched_at=now if dom_status == "Playing" else current.fetched_at,
+                    debugger_url=current.debugger_url,
+                    page_title=current.page_title,
+                    connected_at=current.connected_at,
+                )
+                state = self._state
+
         if _is_playing_state(state.playback_status) and state.fetched_at > 0 and now - state.fetched_at >= _REMOTE_PLAYING_STALE_SECONDS:
             self._invalidate_connection()
             return None
@@ -79,12 +97,8 @@ class CloudMusicRemoteBridge:
         normalized = action.strip().lower()
         if not normalized or self._port <= 0:
             return False
-        self._ensure_started()
-
-        with self._lock:
-            state = self._state
-
-        if not state.connected:
+        state = self._wait_for_connected_state(timeout=2.0)
+        if state is None:
             return False
 
         if normalized in {"play", "pause", "toggle-play-pause", "next", "previous"} and self._click_player_control(normalized):
@@ -117,6 +131,18 @@ class CloudMusicRemoteBridge:
             self._stop_event.clear()
             self._thread = threading.Thread(target=self._run, daemon=True)
             self._thread.start()
+
+    def _wait_for_connected_state(self, timeout: float) -> CloudMusicRemoteState | None:
+        self._ensure_started()
+        deadline = time.monotonic() + max(0.0, timeout)
+        while True:
+            with self._lock:
+                state = self._state
+            if state.connected:
+                return state
+            if time.monotonic() >= deadline or self._stop_event.is_set():
+                return None
+            time.sleep(0.05)
 
     def _run(self) -> None:
         while not self._stop_event.is_set():
@@ -161,7 +187,7 @@ class CloudMusicRemoteBridge:
                     if not raw_message:
                         continue
                     self._handle_ws_message(raw_message)
-            except OSError:
+            except (OSError, TimeoutError, RuntimeError, websocket.WebSocketException):
                 pass
             finally:
                 try:
@@ -231,7 +257,7 @@ class CloudMusicRemoteBridge:
                 state = self._state
                 playback_status = state.playback_status
                 if play_id and play_id != state.play_id:
-                    playback_status = "Unknown"
+                    playback_status = "Paused"
                 self._state = CloudMusicRemoteState(
                     connected=state.connected,
                     play_id=play_id or state.play_id,
@@ -255,14 +281,16 @@ class CloudMusicRemoteBridge:
                 state = self._state
                 playback_status = state.playback_status
                 same_track = not play_id or not state.play_id or play_id == state.play_id
-                progressed = position_ms > max(state.position_ms + 900, 1200)
-                if (
-                    playback_status.strip().lower() not in {"paused", "stopped"}
-                    or not same_track
-                    or progressed
-                    or now - state.fetched_at > 1.0
-                ):
+                new_track = bool(play_id and state.play_id and play_id != state.play_id)
+                progressed = same_track and position_ms > state.position_ms + 350
+                new_track_progressed = new_track and position_ms > 750
+                normalized_status = playback_status.strip().lower()
+                if normalized_status == "playing":
                     playback_status = "Playing"
+                elif progressed or new_track_progressed:
+                    playback_status = "Playing"
+                elif normalized_status not in {"paused", "stopped"}:
+                    playback_status = "Paused"
                 self._state = CloudMusicRemoteState(
                     connected=state.connected,
                     play_id=play_id or state.play_id,
@@ -308,7 +336,7 @@ class CloudMusicRemoteBridge:
                 state = self._state
                 playback_status = state.playback_status
                 if playback_status == "Unknown" and position_ms > 0:
-                    playback_status = "Playing"
+                    playback_status = "Paused"
                 self._state = CloudMusicRemoteState(
                     connected=state.connected,
                     play_id=play_id or state.play_id,
@@ -488,6 +516,24 @@ class CloudMusicRemoteBridge:
             except OSError:
                 pass
 
+    def _query_player_playback_status(self) -> str:
+        try:
+            response = self._call_cdp(
+                "Runtime.evaluate",
+                {
+                    "expression": _player_status_expression(),
+                    "awaitPromise": True,
+                    "returnByValue": True,
+                },
+                timeout=1.0,
+            )
+        except Exception:
+            return "Unknown"
+        result = ((response.get("result") or {}).get("result") or {}).get("value")
+        if not isinstance(result, dict):
+            return "Unknown"
+        return _normalize_playback_state(result.get("playbackStatus"))
+
     def _click_player_control(self, action: str) -> bool:
         response = self._call_cdp(
             "Runtime.evaluate",
@@ -616,6 +662,43 @@ def _install_script(binding_name: str) -> str:
   }}
   return {{ ok: true, waiting: true }};
 }})();
+"""
+
+
+def _player_status_expression() -> str:
+    return """
+(() => {
+  const isVisible = (element) => {
+    if (!element) {
+      return false;
+    }
+    const rect = element.getBoundingClientRect();
+    const style = window.getComputedStyle(element);
+    return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+  };
+  const controlGroups = Array.from(document.querySelectorAll('div')).filter((element) =>
+    isVisible(element) &&
+    String(element.className || '').includes('btns') &&
+    element.querySelector('.cmd-icon-pre') &&
+    element.querySelector('.cmd-icon-next') &&
+    Array.from(element.querySelectorAll('button')).some((button) => button.querySelector('.cmd-icon-pause, .cmd-icon-play'))
+  );
+  const controlGroup = controlGroups.sort((left, right) => right.getBoundingClientRect().y - left.getBoundingClientRect().y)[0] || null;
+  if (!controlGroup) {
+    return { ok: false, playbackStatus: 'Unknown' };
+  }
+  const toggleButton = Array.from(controlGroup.querySelectorAll('button')).find((button) => button.querySelector('.cmd-icon-pause, .cmd-icon-play')) || null;
+  if (!toggleButton) {
+    return { ok: false, playbackStatus: 'Unknown' };
+  }
+  if (toggleButton.querySelector('.cmd-icon-pause')) {
+    return { ok: true, playbackStatus: 'Playing' };
+  }
+  if (toggleButton.querySelector('.cmd-icon-play')) {
+    return { ok: true, playbackStatus: 'Paused' };
+  }
+  return { ok: false, playbackStatus: 'Unknown' };
+})();
 """
 
 

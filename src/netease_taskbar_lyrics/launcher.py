@@ -189,6 +189,7 @@ class TaskLyricBackgroundLauncher:
         self._launched_cloudmusic = False
         self._last_restart_attempt = 0.0
         self._startup_grace_until = 0.0
+        self._remote_missing_since = 0.0
 
     def run(self) -> None:
         try:
@@ -214,14 +215,21 @@ class TaskLyricBackgroundLauncher:
                 process_running = True
                 running = True
 
+        if remote_ready or not process_running or not window_ready:
+            self._remote_missing_since = 0.0
+        elif self._remote_missing_since <= 0:
+            self._remote_missing_since = now
+
         if process_running and self.restart_with_debug and window_ready and not remote_ready:
-            if now - self._last_restart_attempt >= 8.0:
+            missing_for = now - self._remote_missing_since if self._remote_missing_since > 0 else 0.0
+            if missing_for >= 15.0 and now - self._last_restart_attempt >= 20.0:
                 self._last_restart_attempt = now
                 stop_cloudmusic()
                 time.sleep(0.8)
                 if launch_cloudmusic_with_debug(self.remote_debug_port):
                     self._launched_cloudmusic = True
-                    self._startup_grace_until = time.monotonic() + 12.0
+                    self._startup_grace_until = time.monotonic() + 15.0
+                    self._remote_missing_since = 0.0
                 running = True
 
         if running:
@@ -229,6 +237,7 @@ class TaskLyricBackgroundLauncher:
         else:
             self._launched_cloudmusic = False
             self._startup_grace_until = 0.0
+            self._remote_missing_since = 0.0
             self._stop_tasklyric()
 
     def _ensure_tasklyric_running(self) -> None:
