@@ -316,20 +316,25 @@ class MediaSessionProvider:
             track = self._window_probe.get_track_by_song_id(remote_state.song_id)
         if track is None:
             track = self._window_probe.get_current_track()
-        if track is None:
+
+        title = track.title if track else remote_state.title
+        artist = track.artist if track else remote_state.artist
+        duration_ms = track.duration_ms if track and track.duration_ms > 0 else remote_state.duration_ms
+        song_id = remote_state.song_id or (track.song_id if track else 0)
+        if not title.strip() and song_id <= 0:
             return None
 
         return MediaSessionSnapshot(
             source_app_user_model_id=REMOTE_DEBUG_SOURCE,
-            title=track.title,
-            artist=track.artist,
+            title=title,
+            artist=artist,
             album_title="",
             position_ms=max(0, int(remote_state.position_ms)),
-            duration_ms=max(0, int(track.duration_ms)),
+            duration_ms=max(0, int(duration_ms)),
             start_time_ms=0,
             playback_status=remote_state.playback_status or "Unknown",
             fetched_at=remote_state.fetched_at or time.monotonic(),
-            song_id=remote_state.song_id or track.song_id,
+            song_id=song_id,
             detection_source=REMOTE_DEBUG_SOURCE,
             can_pause=True,
             can_play=True,

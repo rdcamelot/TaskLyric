@@ -24,6 +24,9 @@ class CloudMusicRemoteState:
     play_id: str = ""
     resume_or_pause_id: str = ""
     song_id: int = 0
+    title: str = ""
+    artist: str = ""
+    duration_ms: int = 0
     position_ms: int = 0
     playback_status: str = "Unknown"
     fetched_at: float = 0.0
@@ -59,29 +62,36 @@ class CloudMusicRemoteBridge:
             self._invalidate_connection()
             return None
 
+        snapshot_has_reliable_status = self._apply_player_snapshot()
+        with self._lock:
+            state = self._state
+
         if not self._has_meaningful_state(state):
             if state.connected_at > 0 and now - state.connected_at >= _REMOTE_BOOTSTRAP_GRACE_SECONDS:
                 self._invalidate_connection()
             return None
 
-        dom_status = self._query_player_playback_status()
-        if dom_status != "Unknown" and dom_status != state.playback_status:
-            with self._lock:
-                current = self._state
-                self._state = CloudMusicRemoteState(
-                    connected=current.connected,
-                    play_id=current.play_id,
-                    resume_or_pause_id=current.resume_or_pause_id,
-                    song_id=current.song_id,
-                    position_ms=current.position_ms,
-                    playback_status=dom_status,
-                    fetched_at=now if dom_status == "Playing" else current.fetched_at,
-                    debugger_url=current.debugger_url,
-                    page_title=current.page_title,
-                    connected_at=current.connected_at,
-                )
-                state = self._state
-
+        if not snapshot_has_reliable_status:
+            dom_status = self._query_player_playback_status()
+            if dom_status != "Unknown" and dom_status != state.playback_status:
+                with self._lock:
+                    current = self._state
+                    self._state = CloudMusicRemoteState(
+                        connected=current.connected,
+                        play_id=current.play_id,
+                        resume_or_pause_id=current.resume_or_pause_id,
+                        song_id=current.song_id,
+                        title=current.title,
+                        artist=current.artist,
+                        duration_ms=current.duration_ms,
+                        position_ms=current.position_ms,
+                        playback_status=dom_status,
+                        fetched_at=now if dom_status == "Playing" else current.fetched_at,
+                        debugger_url=current.debugger_url,
+                        page_title=current.page_title,
+                        connected_at=current.connected_at,
+                    )
+                    state = self._state
         if _is_playing_state(state.playback_status) and state.fetched_at > 0 and now - state.fetched_at >= _REMOTE_PLAYING_STALE_SECONDS:
             self._invalidate_connection()
             return None
@@ -101,7 +111,18 @@ class CloudMusicRemoteBridge:
         if state is None:
             return False
 
+        self._apply_player_snapshot()
+        with self._lock:
+            state = self._state
+
+        if normalized == "play" and state.playback_status == "Playing":
+            return True
+        if normalized == "pause" and state.playback_status in {"Paused", "Stopped"}:
+            return True
+
         if normalized in {"play", "pause", "toggle-play-pause", "next", "previous"} and self._click_player_control(normalized):
+            time.sleep(0.25)
+            self._apply_player_snapshot()
             return True
 
         if normalized in {"play", "pause"} and state.play_id and state.resume_or_pause_id:
@@ -410,6 +431,8 @@ class CloudMusicRemoteBridge:
     def _has_meaningful_state(state: CloudMusicRemoteState) -> bool:
         if state.play_id or state.song_id > 0 or state.position_ms > 0:
             return True
+        if state.title.strip() or state.artist.strip():
+            return True
         return state.playback_status.strip().lower() not in {"", "unknown"}
 
     def _debugger_target_available(self, debugger_url: str) -> bool:
@@ -515,6 +538,76 @@ class CloudMusicRemoteBridge:
                     ws.settimeout(original_timeout)
             except OSError:
                 pass
+
+    def _apply_player_snapshot(self) -> bool:
+        try:
+            response = self._call_cdp(
+                "Runtime.evaluate",
+                {
+                    "expression": _player_snapshot_expression(),
+                    "awaitPromise": True,
+                    "returnByValue": True,
+                },
+                timeout=1.5,
+            )
+        except Exception:
+            return False
+
+        result = ((response.get("result") or {}).get("result") or {}).get("value")
+        if not isinstance(result, dict) or not result.get("ok"):
+            return False
+
+        playback_status = _normalize_playback_state(result.get("playbackStatus"))
+        has_reliable_status = playback_status != "Unknown"
+        song_id = _coerce_int(result.get("songId"))
+        title = str(result.get("title") or "").strip()
+        artist = str(result.get("artist") or "").strip()
+        play_id = str(result.get("playId") or "").strip()
+        position_ms = _normalize_progress_value(result.get("positionMs") or result.get("position") or 0)
+        duration_ms = _normalize_progress_value(result.get("durationMs") or result.get("duration") or 0)
+        now = time.monotonic()
+
+        with self._lock:
+            state = self._state
+            same_track = not song_id or not state.song_id or song_id == state.song_id
+            if playback_status == "Unknown":
+                playback_status = state.playback_status
+
+            if position_ms <= 0 and same_track:
+                position_ms = state.position_ms
+
+            fetched_at = state.fetched_at or now
+            if playback_status == "Playing":
+                if same_track and state.playback_status == "Playing" and state.fetched_at > 0:
+                    estimated_ms = state.position_ms + int((now - state.fetched_at) * 1000)
+                    if position_ms <= 0 or abs(position_ms - estimated_ms) <= 2500:
+                        position_ms = state.position_ms
+                        fetched_at = state.fetched_at
+                    else:
+                        fetched_at = now
+                else:
+                    fetched_at = now
+            elif playback_status in {"Paused", "Stopped"}:
+                if same_track and state.playback_status == playback_status and state.position_ms > 0 and abs(position_ms - state.position_ms) <= 2500:
+                    position_ms = state.position_ms
+                fetched_at = now
+
+            self._state = CloudMusicRemoteState(
+                connected=state.connected,
+                play_id=play_id or state.play_id,
+                resume_or_pause_id=state.resume_or_pause_id,
+                song_id=song_id or state.song_id,
+                title=title or state.title,
+                artist=artist or state.artist,
+                duration_ms=duration_ms or state.duration_ms,
+                position_ms=position_ms,
+                playback_status=playback_status,
+                fetched_at=fetched_at,
+                debugger_url=state.debugger_url,
+                page_title=state.page_title,
+                connected_at=state.connected_at,
+            )
+        return has_reliable_status
 
     def _query_player_playback_status(self) -> str:
         try:
@@ -665,6 +758,64 @@ def _install_script(binding_name: str) -> str:
 """
 
 
+def _player_snapshot_expression() -> str:
+    return """
+(() => {
+  const decode = (key) => {
+    try {
+      if (!window.channel || typeof window.channel.deData !== 'function') {
+        return null;
+      }
+      const raw = window.localStorage ? window.localStorage.getItem(key) : null;
+      if (!raw) {
+        return null;
+      }
+      const decoded = window.channel.deData(raw);
+      return decoded ? JSON.parse(decoded) : null;
+    } catch (error) {
+      return null;
+    }
+  };
+  const toNumber = (value) => {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : 0;
+  };
+  const artistText = (artists) => {
+    if (!Array.isArray(artists)) {
+      return '';
+    }
+    return artists.map((artist) => artist && artist.name).filter(Boolean).join(' / ');
+  };
+  const playing = decode('playingInfo') || {};
+  const last = decode('lastPlaying') || {};
+  const track = playing.curTrack || {};
+  const curPlaying = playing.curPlaying || {};
+  const songId = toNumber(
+    playing.resourceTrackId ||
+    playing.onlineResourceId ||
+    track.id ||
+    curPlaying.id ||
+    last.trackId ||
+    last.resourceId
+  );
+  const title = String(playing.resourceName || track.name || curPlaying.name || '').trim();
+  const artist = artistText(playing.resourceArtists || track.artists || track.ar || curPlaying.artists || curPlaying.ar);
+  const position = toNumber(last.current || last.position || playing.current || playing.loadingSeekDuration);
+  const duration = toNumber(playing.resourceDuration || last.resourceDuration || track.duration || track.dt || curPlaying.duration || curPlaying.dt);
+  const playId = String(playing.playId || '').trim();
+  return {
+    ok: Boolean(songId || title || position || playId),
+    songId,
+    title,
+    artist,
+    playId,
+    position,
+    duration,
+    playbackStatus: playing.playingState,
+  };
+})();
+"""
+
 def _player_status_expression() -> str:
     return """
 (() => {
@@ -753,12 +904,6 @@ def _player_control_expression(action: str) -> str:
     return {{ ok: false, error: 'control-not-found', action: requestedAction }};
   }}
   const stateBefore = playbackStatus();
-  if (requestedAction === 'pause' && stateBefore === 'Paused') {{
-    return {{ ok: true, action: requestedAction, noop: true, playbackStatus: stateBefore }};
-  }}
-  if (requestedAction === 'play' && stateBefore === 'Playing') {{
-    return {{ ok: true, action: requestedAction, noop: true, playbackStatus: stateBefore }};
-  }}
   if (typeof button.click === 'function') {{
     button.click();
   }} else {{
@@ -767,6 +912,13 @@ def _player_control_expression(action: str) -> str:
   return {{ ok: true, action: requestedAction, playbackStatus: playbackStatus(), stateBefore }};
 }})();
 """
+
+
+def _coerce_int(raw: Any) -> int:
+    try:
+        return max(0, int(float(raw)))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _extract_song_id(raw: Any) -> int:
