@@ -92,7 +92,7 @@ class CloudMusicRemoteBridge:
                         connected_at=current.connected_at,
                     )
                     state = self._state
-        if _is_playing_state(state.playback_status) and state.fetched_at > 0 and now - state.fetched_at >= _REMOTE_PLAYING_STALE_SECONDS:
+        if not snapshot_has_reliable_status and _is_playing_state(state.playback_status) and state.fetched_at > 0 and now - state.fetched_at >= _REMOTE_PLAYING_STALE_SECONDS:
             self._invalidate_connection()
             return None
 
@@ -284,6 +284,9 @@ class CloudMusicRemoteBridge:
                     play_id=play_id or state.play_id,
                     resume_or_pause_id=state.resume_or_pause_id,
                     song_id=song_id or state.song_id,
+                    title=state.title,
+                    artist=state.artist,
+                    duration_ms=state.duration_ms,
                     position_ms=0 if play_id and play_id != state.play_id else state.position_ms,
                     playback_status=playback_status,
                     fetched_at=now,
@@ -317,6 +320,9 @@ class CloudMusicRemoteBridge:
                     play_id=play_id or state.play_id,
                     resume_or_pause_id=state.resume_or_pause_id,
                     song_id=song_id or state.song_id,
+                    title=state.title,
+                    artist=state.artist,
+                    duration_ms=state.duration_ms,
                     position_ms=position_ms,
                     playback_status=playback_status,
                     fetched_at=now,
@@ -339,6 +345,9 @@ class CloudMusicRemoteBridge:
                     play_id=play_id or state.play_id,
                     resume_or_pause_id=resume_id or state.resume_or_pause_id,
                     song_id=song_id or state.song_id,
+                    title=state.title,
+                    artist=state.artist,
+                    duration_ms=state.duration_ms,
                     position_ms=state.position_ms,
                     playback_status=playback_status,
                     fetched_at=now if playback_status != state.playback_status else state.fetched_at,
@@ -363,6 +372,9 @@ class CloudMusicRemoteBridge:
                     play_id=play_id or state.play_id,
                     resume_or_pause_id=state.resume_or_pause_id,
                     song_id=song_id or state.song_id,
+                    title=state.title,
+                    artist=state.artist,
+                    duration_ms=state.duration_ms,
                     position_ms=position_ms,
                     playback_status=playback_status,
                     fetched_at=now,
@@ -382,6 +394,9 @@ class CloudMusicRemoteBridge:
                     play_id=play_id or state.play_id,
                     resume_or_pause_id=state.resume_or_pause_id,
                     song_id=song_id or state.song_id,
+                    title=state.title,
+                    artist=state.artist,
+                    duration_ms=state.duration_ms,
                     position_ms=state.position_ms,
                     playback_status="Stopped",
                     fetched_at=state.fetched_at,
@@ -557,7 +572,7 @@ class CloudMusicRemoteBridge:
         if not isinstance(result, dict) or not result.get("ok"):
             return False
 
-        playback_status = _normalize_playback_state(result.get("playbackStatus"))
+        playback_status = _normalize_snapshot_playback_state(result.get("playbackStatus"))
         has_reliable_status = playback_status != "Unknown"
         song_id = _coerce_int(result.get("songId"))
         title = str(result.get("title") or "").strip()
@@ -641,7 +656,7 @@ class CloudMusicRemoteBridge:
         if not isinstance(result, dict) or not result.get("ok"):
             return False
 
-        playback_status = _normalize_playback_state(result.get("playbackStatus"))
+        playback_status = _normalize_snapshot_playback_state(result.get("playbackStatus"))
         if playback_status != "Unknown":
             with self._lock:
                 state = self._state
@@ -650,6 +665,9 @@ class CloudMusicRemoteBridge:
                     play_id=state.play_id,
                     resume_or_pause_id=state.resume_or_pause_id,
                     song_id=state.song_id,
+                    title=state.title,
+                    artist=state.artist,
+                    duration_ms=state.duration_ms,
                     position_ms=state.position_ms,
                     playback_status=playback_status,
                     fetched_at=time.monotonic(),
@@ -675,6 +693,9 @@ class CloudMusicRemoteBridge:
                 play_id=state.play_id,
                 resume_or_pause_id=state.resume_or_pause_id,
                 song_id=state.song_id,
+                title=state.title,
+                artist=state.artist,
+                duration_ms=state.duration_ms,
                 position_ms=state.position_ms,
                 playback_status=state.playback_status,
                 fetched_at=state.fetched_at,
@@ -956,6 +977,17 @@ def _normalize_progress_value(raw: Any) -> int:
         return int(round(value * 1000))
     return int(round(value))
 
+
+def _normalize_snapshot_playback_state(raw: Any) -> str:
+    if isinstance(raw, (int, float)):
+        numeric = int(raw)
+        if numeric == 1:
+            return "Paused"
+        if numeric == 2:
+            return "Playing"
+        if numeric == 0:
+            return "Stopped"
+    return _normalize_playback_state(raw)
 
 def _normalize_playback_state(raw: Any) -> str:
     if isinstance(raw, str):

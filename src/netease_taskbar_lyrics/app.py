@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass, replace
@@ -15,6 +15,7 @@ from .smtc import MediaSessionProvider, MediaSessionSnapshot
 DEFAULT_POLL_INTERVAL_SECONDS = 1.2
 DEFAULT_TICK_INTERVAL_MS = 150
 AUTO_STOP_ABSENCE_SECONDS = 5.0
+SESSION_MISSING_GRACE_SECONDS = 3.5
 WAITING_TEXT = "等待网易云音乐开始播放"
 LOADING_PREFIX = "正在加载歌词"
 STOPPED_SUBTEXT = "TaskLyric"
@@ -57,6 +58,7 @@ class TaskbarLyricsApp:
         self._last_payload_key: tuple[str, ...] | None = None
         self._has_seen_cloudmusic = False
         self._missing_cloudmusic_since = 0.0
+        self._session_missing_since = 0.0
         self._shutdown_complete = False
 
     def start(self) -> None:
@@ -120,6 +122,12 @@ class TaskbarLyricsApp:
             return
 
         if latest_session is None:
+            if self._active_session is not None and self.provider.has_cloudmusic_activity():
+                now = time.monotonic()
+                if self._session_missing_since <= 0:
+                    self._session_missing_since = now
+                if now - self._session_missing_since < SESSION_MISSING_GRACE_SECONDS:
+                    return
             if self._active_session is not None:
                 self.bridge.emit_event("tasklyric.live.session_cleared", {})
             self._active_session = None
@@ -128,9 +136,10 @@ class TaskbarLyricsApp:
             self._main_timeline = None
             self._translation_timeline = None
             self._resolved_song_id = 0
+            self._session_missing_since = 0.0
             return
-
         previous_track = self._active_track_key
+        self._session_missing_since = 0.0
         self._active_session = latest_session
         self._has_seen_cloudmusic = True
         self._missing_cloudmusic_since = 0.0

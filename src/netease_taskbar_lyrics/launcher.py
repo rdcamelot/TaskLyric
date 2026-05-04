@@ -120,6 +120,19 @@ def find_cloudmusic_executable() -> Path | None:
     return None
 
 
+def cloudmusic_has_remote_debug_port(port: int) -> bool:
+    expected = f"--remote-debugging-port={int(port)}"
+    payload = _powershell_json(
+        "Get-CimInstance Win32_Process | Where-Object { $_.Name -ieq 'cloudmusic.exe' } | Select-Object -ExpandProperty CommandLine | ConvertTo-Json -Compress"
+    )
+    if isinstance(payload, str):
+        command_lines = [payload]
+    elif isinstance(payload, list):
+        command_lines = [str(value) for value in payload if value]
+    else:
+        return False
+    return any(expected in command_line for command_line in command_lines)
+
 def remote_debug_available(port: int) -> bool:
     url = f"http://127.0.0.1:{int(port)}/json/list"
     try:
@@ -203,9 +216,12 @@ class TaskLyricBackgroundLauncher:
 
     def _tick(self) -> None:
         process_running = is_cloudmusic_running()
+        remote_debug_process = cloudmusic_has_remote_debug_port(self.remote_debug_port) if process_running else False
         remote_ready = remote_debug_available(self.remote_debug_port)
         window_ready = has_cloudmusic_window()
         now = time.monotonic()
+        if remote_debug_process and not remote_ready:
+            self._startup_grace_until = max(self._startup_grace_until, now + 30.0)
         running = process_running and (remote_ready or window_ready or now < self._startup_grace_until)
 
         if self.launch_cloudmusic and not process_running and not self._launched_cloudmusic:
@@ -213,16 +229,17 @@ class TaskLyricBackgroundLauncher:
                 self._launched_cloudmusic = True
                 self._startup_grace_until = time.monotonic() + 12.0
                 process_running = True
+                remote_debug_process = True
                 running = True
 
-        if remote_ready or not process_running or not window_ready:
+        if remote_ready or not process_running or not window_ready or remote_debug_process:
             self._remote_missing_since = 0.0
         elif self._remote_missing_since <= 0:
             self._remote_missing_since = now
 
-        if process_running and self.restart_with_debug and window_ready and not remote_ready:
+        if process_running and self.restart_with_debug and window_ready and not remote_ready and not remote_debug_process:
             missing_for = now - self._remote_missing_since if self._remote_missing_since > 0 else 0.0
-            if missing_for >= 15.0 and now - self._last_restart_attempt >= 20.0:
+            if missing_for >= 45.0 and now - self._last_restart_attempt >= 90.0:
                 self._last_restart_attempt = now
                 stop_cloudmusic()
                 time.sleep(0.8)
@@ -239,7 +256,6 @@ class TaskLyricBackgroundLauncher:
             self._startup_grace_until = 0.0
             self._remote_missing_since = 0.0
             self._stop_tasklyric()
-
     def _ensure_tasklyric_running(self) -> None:
         process = self._tasklyric_process
         if process is not None and process.poll() is None:
