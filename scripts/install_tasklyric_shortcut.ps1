@@ -87,10 +87,21 @@ function Get-PinnedTaskbarCloudMusicLinks {
     if (-not (Test-Path $pinned)) {
         return @()
     }
-    $patterns = @('*网易云*.lnk', '*CloudMusic*.lnk', '*NetEase*Music*.lnk')
+
+    $wsh = New-Object -ComObject WScript.Shell
     $results = @()
-    foreach ($pattern in $patterns) {
-        $results += Get-ChildItem -Path $pinned -Filter $pattern -ErrorAction SilentlyContinue
+    foreach ($shortcutFile in Get-ChildItem -Path $pinned -Filter '*.lnk' -ErrorAction SilentlyContinue) {
+        try {
+            $shortcut = $wsh.CreateShortcut($shortcutFile.FullName)
+            $targetPath = [string]$shortcut.TargetPath
+        } catch {
+            continue
+        }
+
+        $name = [string]$shortcutFile.Name
+        if ($targetPath -match '(?i)cloudmusic\.exe$' -or $targetPath -match '(?i)\\NetEase\\CloudMusic\\' -or $name -match '(?i)CloudMusic|NetEase') {
+            $results += $shortcutFile
+        }
     }
     return $results | Sort-Object FullName -Unique
 }
@@ -117,7 +128,7 @@ foreach ($target in $targets) {
         if ($LaunchCloudMusic) {
             $arguments += '--launch-cloudmusic'
         }
-        if ($RestartCloudMusicWithDebug -or -not $PSBoundParameters.ContainsKey('RestartCloudMusicWithDebug')) {
+        if ($RestartCloudMusicWithDebug) {
             $arguments += '--restart-cloudmusic-with-debug'
         }
         $linkName = 'TaskLyric Background.lnk'

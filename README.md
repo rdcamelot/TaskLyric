@@ -84,6 +84,8 @@ powershell -ExecutionPolicy Bypass -File scripts\install_tasklyric_shortcut.ps1 
 - 创建 `TaskLyric Background.lnk` 到 Windows 启动项，登录后后台常驻，网易云打开时自动启动 TaskLyric。
 - 修改已固定到任务栏的网易云音乐快捷方式，让你点击原来的网易云图标时，以 `--remote-debugging-port=9222` 启动网易云。
 
+默认安装不会强制重启已经打开的网易云。如果你明确希望 watcher 自动把“未带 remote-debug 参数”的网易云重启为正确模式，可以额外加 `-RestartCloudMusicWithDebug`。
+
 注意：`-TaskbarPinned` 不会单独启动 TaskLyric，它只修复任务栏网易云的启动参数。想实现“点击任务栏网易云后自动有任务栏歌词”，需要配合 `-Startup` 的后台 watcher。
 
 如果脚本提示找不到已固定的网易云任务栏快捷方式，请先把网易云音乐固定到任务栏，再重新执行上面的安装命令。

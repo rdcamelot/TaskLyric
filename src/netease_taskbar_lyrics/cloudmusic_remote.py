@@ -66,6 +66,9 @@ class CloudMusicRemoteBridge:
         with self._lock:
             state = self._state
 
+        if not state.connected:
+            return None
+
         if not self._has_meaningful_state(state):
             if state.connected_at > 0 and now - state.connected_at >= _REMOTE_BOOTSTRAP_GRACE_SECONDS:
                 self._invalidate_connection()
@@ -114,6 +117,16 @@ class CloudMusicRemoteBridge:
         self._apply_player_snapshot()
         with self._lock:
             state = self._state
+
+        if not state.connected:
+            state = self._wait_for_connected_state(timeout=3.0)
+            if state is None:
+                return False
+            self._apply_player_snapshot()
+            with self._lock:
+                state = self._state
+            if not state.connected:
+                return False
 
         if normalized == "play" and state.playback_status == "Playing":
             return True
@@ -472,14 +485,17 @@ class CloudMusicRemoteBridge:
 
     def _window_channel_call(self, command: str, *args: Any) -> dict[str, Any]:
         expression = _channel_call_expression(command, list(args))
-        response = self._call_cdp(
-            "Runtime.evaluate",
-            {
-                "expression": expression,
-                "awaitPromise": True,
-                "returnByValue": True,
-            },
-        )
+        try:
+            response = self._call_cdp(
+                "Runtime.evaluate",
+                {
+                    "expression": expression,
+                    "awaitPromise": True,
+                    "returnByValue": True,
+                },
+            )
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
         result = ((response.get("result") or {}).get("result") or {}).get("value")
         return result if isinstance(result, dict) else {"ok": False, "error": "no-result"}
 
@@ -508,6 +524,9 @@ class CloudMusicRemoteBridge:
             if isinstance(response, dict) and response.get("error"):
                 raise RuntimeError(str(response.get("error")))
             return response if isinstance(response, dict) else {}
+        except (OSError, TimeoutError, RuntimeError, websocket.WebSocketException):
+            self._invalidate_connection()
+            raise
         finally:
             with self._pending_lock:
                 self._pending.pop(message_id, None)
@@ -643,15 +662,18 @@ class CloudMusicRemoteBridge:
         return _normalize_playback_state(result.get("playbackStatus"))
 
     def _click_player_control(self, action: str) -> bool:
-        response = self._call_cdp(
-            "Runtime.evaluate",
-            {
-                "expression": _player_control_expression(action),
-                "awaitPromise": True,
-                "returnByValue": True,
-            },
-            timeout=3.0,
-        )
+        try:
+            response = self._call_cdp(
+                "Runtime.evaluate",
+                {
+                    "expression": _player_control_expression(action),
+                    "awaitPromise": True,
+                    "returnByValue": True,
+                },
+                timeout=3.0,
+            )
+        except Exception:
+            return False
         result = ((response.get("result") or {}).get("result") or {}).get("value")
         if not isinstance(result, dict) or not result.get("ok"):
             return False

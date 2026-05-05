@@ -84,6 +84,8 @@ This does two things:
 - Creates `TaskLyric Background.lnk` in the Windows Startup folder. It keeps a lightweight watcher running and starts TaskLyric when NetEase Cloud Music starts.
 - Updates the pinned NetEase Cloud Music taskbar shortcut so clicking the original taskbar icon starts Cloud Music with `--remote-debugging-port=9222`.
 
+The default install does not force-restart an already running NetEase process. If you explicitly want the watcher to restart a NetEase process that was launched without the remote-debug argument, add `-RestartCloudMusicWithDebug`.
+
 Note: `-TaskbarPinned` alone does not start TaskLyric. It only fixes the pinned NetEase shortcut arguments. To make TaskLyric follow the taskbar NetEase icon, use it together with `-Startup`.
 
 If no pinned NetEase taskbar shortcut is found, pin NetEase Cloud Music to the taskbar first, then rerun the install command.
