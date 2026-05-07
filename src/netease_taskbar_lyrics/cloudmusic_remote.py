@@ -138,6 +138,11 @@ class CloudMusicRemoteBridge:
             self._apply_player_snapshot()
             return True
 
+        if normalized in {"play", "toggle-play-pause"} and self._restore_last_play_track():
+            time.sleep(0.8)
+            self._apply_player_snapshot()
+            return True
+
         if normalized in {"play", "pause"} and state.play_id and state.resume_or_pause_id:
             result = self._window_channel_call(f"audioplayer.{normalized}", state.play_id, state.resume_or_pause_id)
             return bool(result.get("ok"))
@@ -311,11 +316,13 @@ class CloudMusicRemoteBridge:
 
         if event_type == "onPlayProgress":
             play_id = str(args[0] or "") if len(args) >= 1 else ""
-            position_ms = _normalize_progress_value(args[1] if len(args) >= 2 else 0)
+            raw_position = args[1] if len(args) >= 2 else 0
+            position_ms = _normalize_progress_value(raw_position)
             song_id = _extract_song_id(play_id)
             now = time.monotonic()
             with self._lock:
                 state = self._state
+                position_ms = _fit_progress_to_duration(raw_position, position_ms, state.duration_ms)
                 playback_status = state.playback_status
                 same_track = not play_id or not state.play_id or play_id == state.play_id
                 new_track = bool(play_id and state.play_id and play_id != state.play_id)
@@ -597,8 +604,10 @@ class CloudMusicRemoteBridge:
         title = str(result.get("title") or "").strip()
         artist = str(result.get("artist") or "").strip()
         play_id = str(result.get("playId") or "").strip()
-        position_ms = _normalize_progress_value(result.get("positionMs") or result.get("position") or 0)
+        raw_position = result.get("positionMs") or result.get("position") or 0
+        position_ms = _normalize_progress_value(raw_position)
         duration_ms = _normalize_progress_value(result.get("durationMs") or result.get("duration") or 0)
+        position_ms = _fit_progress_to_duration(raw_position, position_ms, duration_ms)
         now = time.monotonic()
 
         with self._lock:
@@ -698,6 +707,23 @@ class CloudMusicRemoteBridge:
                     connected_at=state.connected_at,
                 )
         return True
+
+    def _restore_last_play_track(self) -> bool:
+        try:
+            response = self._call_cdp(
+                "Runtime.evaluate",
+                {
+                    "expression": _restore_last_play_track_expression(),
+                    "awaitPromise": True,
+                    "returnByValue": True,
+                },
+                timeout=4.0,
+            )
+        except Exception:
+            return False
+
+        result = ((response.get("result") or {}).get("result") or {}).get("value")
+        return bool(isinstance(result, dict) and result.get("ok"))
 
     def _clear_pending(self, error: Exception) -> None:
         with self._pending_lock:
@@ -829,8 +855,17 @@ def _player_snapshot_expression() -> str:
     }
     return artists.map((artist) => artist && artist.name).filter(Boolean).join(' / ');
   };
+  const progressMs = (value) => {
+    const numeric = toNumber(value);
+    if (numeric <= 0) {
+      return 0;
+    }
+    return numeric < 10000 ? Math.round(numeric * 1000) : Math.round(numeric);
+  };
   const playing = decode('playingInfo') || {};
   const last = decode('lastPlaying') || {};
+  const cached = playing.curPlayingWithUpdateTimeLimit || {};
+  const cachedTrack = cached.track || (cached.fromInfo && cached.fromInfo.sourceData) || {};
   const track = playing.curTrack || {};
   const curPlaying = playing.curPlaying || {};
   const songId = toNumber(
@@ -838,13 +873,16 @@ def _player_snapshot_expression() -> str:
     playing.onlineResourceId ||
     track.id ||
     curPlaying.id ||
+    cached.trackId ||
+    cached.resourceId ||
+    cachedTrack.id ||
     last.trackId ||
     last.resourceId
   );
-  const title = String(playing.resourceName || track.name || curPlaying.name || '').trim();
-  const artist = artistText(playing.resourceArtists || track.artists || track.ar || curPlaying.artists || curPlaying.ar);
-  const position = toNumber(last.current || last.position || playing.current || playing.loadingSeekDuration);
-  const duration = toNumber(playing.resourceDuration || last.resourceDuration || track.duration || track.dt || curPlaying.duration || curPlaying.dt);
+  const title = String(playing.resourceName || track.name || curPlaying.name || cachedTrack.name || '').trim();
+  const artist = artistText(playing.resourceArtists || track.artists || track.ar || curPlaying.artists || curPlaying.ar || cachedTrack.artists || cachedTrack.ar);
+  const position = progressMs(last.current || last.position || playing.current || playing.loadingSeekDuration);
+  const duration = progressMs(playing.resourceDuration || last.resourceDuration || track.duration || track.dt || curPlaying.duration || curPlaying.dt || cachedTrack.duration || cachedTrack.dt);
   const playId = String(playing.playId || '').trim();
   return {
     ok: Boolean(songId || title || position || playId),
@@ -957,6 +995,156 @@ def _player_control_expression(action: str) -> str:
 """
 
 
+def _restore_last_play_track_expression() -> str:
+    return """
+(async () => {
+  const getWebpackRequire = () => {
+    if (window.__tasklyricWebpackRequire) {
+      return window.__tasklyricWebpackRequire;
+    }
+    if (!window.webpackJsonp || typeof window.webpackJsonp.push !== 'function') {
+      return null;
+    }
+    const moduleId = Math.floor(Math.random() * 1000000000);
+    const chunkId = moduleId + 1;
+    window.webpackJsonp.push([[chunkId], {
+      [moduleId]: function(module, exports, require) {
+        window.__tasklyricWebpackRequire = require;
+      }
+    }, [[moduleId]]]);
+    return window.__tasklyricWebpackRequire || null;
+  };
+  const findDvaTool = (require) => {
+    if (!require) {
+      return null;
+    }
+    try {
+      const known = require(11);
+      if (known && known.a && typeof known.a.getDispatch === 'function') {
+        return known.a;
+      }
+    } catch (error) {
+    }
+    const modules = require.m || {};
+    for (const id of Object.keys(modules)) {
+      const source = String(modules[id] || '');
+      if (!source.includes('getDispatch') || !source.includes('getStore')) {
+        continue;
+      }
+      try {
+        const candidate = require(id);
+        if (candidate && candidate.a && typeof candidate.a.getDispatch === 'function' && typeof candidate.a.getStore === 'function') {
+          return candidate.a;
+        }
+      } catch (error) {
+      }
+    }
+    return null;
+  };
+  const decode = (key) => {
+    try {
+      if (!window.channel || typeof window.channel.deData !== 'function') {
+        return null;
+      }
+      const raw = window.localStorage ? window.localStorage.getItem(key) : null;
+      return raw ? JSON.parse(window.channel.deData(raw)) : null;
+    } catch (error) {
+      return null;
+    }
+  };
+  try {
+    const require = getWebpackRequire();
+    const dva = findDvaTool(require);
+    if (!dva) {
+      return { ok: false, error: 'dva-tool-not-found' };
+    }
+    const dispatch = dva.getDispatch();
+    const before = dva.getStore() || {};
+    const playing = before.playing || {};
+    if (playing.playingState === 2) {
+      return { ok: true, skipped: 'already-playing' };
+    }
+
+    const cached = playing.curPlayingWithUpdateTimeLimit || (decode('playingInfo') || {}).curPlayingWithUpdateTimeLimit || null;
+    const last = decode('lastPlaying') || {};
+    const progressMs = (value) => {
+      const numeric = Number(value || 0);
+      if (!Number.isFinite(numeric) || numeric <= 0) {
+        return 0;
+      }
+      return numeric < 10000 ? Math.round(numeric * 1000) : Math.round(numeric);
+    };
+    const lastProgressMs = progressMs(last.current || last.position);
+    let used = '';
+    if (last.resourceId || last.trackId) {
+      used = 'restoreLastPlayTrack';
+      dispatch({ type: 'playing/restoreLastPlayTrack', payload: { triggerScene: 'native' } });
+    } else if (cached && cached.track && (cached.resourceId || cached.trackId || cached.track.id)) {
+      used = 'playOneTrackInPlayingList';
+      dispatch({
+        type: 'playing/playOneTrackInPlayingList',
+        payload: {
+          item: cached,
+          flag: 0,
+          switchType: 'call',
+          triggerScene: 'native',
+          triggerAction: 'tasklyric-restore',
+        },
+      });
+    } else {
+      return { ok: false, error: 'last-playing-missing' };
+    }
+
+    if (cached && cached.track && (cached.resourceId || cached.trackId || cached.track.id)) {
+      setTimeout(() => {
+        try {
+          const current = (dva.getStore() || {}).playing || {};
+          if (!current.curPlaying && !current.playId && !current.resourceTrackId) {
+            dispatch({
+              type: 'playing/playOneTrackInPlayingList',
+              payload: {
+                item: cached,
+                flag: 0,
+                switchType: 'call',
+                triggerScene: 'native',
+                triggerAction: 'tasklyric-restore-fallback',
+              },
+            });
+          }
+        } catch (error) {
+        }
+      }, 1000);
+    }
+    if (lastProgressMs > 0) {
+      setTimeout(() => {
+        try {
+          dispatch({ type: 'playing/setPlayingPosition', payload: { duration: lastProgressMs } });
+        } catch (error) {
+        }
+      }, 800);
+    }
+    setTimeout(() => {
+      try {
+        dispatch({ type: 'playing/resume', payload: { triggerScene: 'native' } });
+      } catch (error) {
+      }
+    }, 1200);
+    if (lastProgressMs > 0) {
+      setTimeout(() => {
+        try {
+          dispatch({ type: 'playing/setPlayingPosition', payload: { duration: lastProgressMs } });
+        } catch (error) {
+        }
+      }, 1900);
+    }
+    return { ok: true, used, lastProgressMs };
+  } catch (error) {
+    return { ok: false, error: String(error && error.message || error) };
+  }
+})();
+"""
+
+
 def _coerce_int(raw: Any) -> int:
     try:
         return max(0, int(float(raw)))
@@ -986,6 +1174,20 @@ def _extract_seek_position_ms(values: list[Any]) -> int:
 
     # NetEase seek payloads can vary; the target position is consistently the last numeric value.
     return _normalize_progress_value(numeric_values[-1])
+
+
+def _fit_progress_to_duration(raw: Any, position_ms: int, duration_ms: int) -> int:
+    if duration_ms <= 0 or position_ms <= duration_ms + 30000:
+        return max(0, position_ms)
+    raw_ms = _coerce_int(raw)
+    if raw_ms <= 0:
+        return max(0, position_ms)
+    if raw_ms <= duration_ms + 30000:
+        return raw_ms
+    scaled_ms = int(round(raw_ms / 1000))
+    if 0 <= scaled_ms <= duration_ms + 30000:
+        return scaled_ms
+    return max(0, position_ms)
 
 
 def _normalize_progress_value(raw: Any) -> int:
