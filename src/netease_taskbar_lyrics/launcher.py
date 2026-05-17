@@ -16,6 +16,7 @@ from .cloudmusic import CloudMusicWindowProbe
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_REMOTE_DEBUG_PORT = 9222
 DEFAULT_POLL_INTERVAL_SECONDS = 1.0
+SHORTCUT_REPAIR_INTERVAL_SECONDS = 300.0
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 _WINDOW_PROBE = CloudMusicWindowProbe()
 
@@ -161,6 +162,101 @@ def launch_cloudmusic_with_debug(port: int) -> bool:
     return True
 
 
+def repair_pinned_cloudmusic_shortcuts(port: int) -> dict[str, object] | None:
+    port = int(port)
+    # NetEase updates can recreate the pinned taskbar shortcut and drop our
+    # remote-debug argument. Repairing the link is safe; restarting the current
+    # player remains opt-in because it interrupts user playback.
+    command = r"""
+$ErrorActionPreference = 'SilentlyContinue'
+$port = __PORT__
+$pinned = Join-Path $env:APPDATA 'Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar'
+$result = [ordered]@{
+    checked = 0
+    repaired = 0
+    found = 0
+    paths = @()
+}
+
+function Get-CloudMusicExecutable {
+    $processPath = Get-CimInstance Win32_Process -Filter "name='cloudmusic.exe'" -ErrorAction SilentlyContinue |
+        Select-Object -First 1 -ExpandProperty ExecutablePath
+    if ($processPath -and (Test-Path $processPath)) {
+        return $processPath
+    }
+
+    $candidates = @(
+        'D:\CloudMusic\CloudMusic\cloudmusic.exe',
+        (Join-Path $env:ProgramFiles 'NetEase\CloudMusic\cloudmusic.exe'),
+        (Join-Path $env:LOCALAPPDATA 'Programs\NetEase\CloudMusic\cloudmusic.exe')
+    )
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path $candidate)) {
+            return $candidate
+        }
+    }
+    return $null
+}
+
+if (Test-Path $pinned) {
+    $wsh = New-Object -ComObject WScript.Shell
+    $cloudMusicExe = Get-CloudMusicExecutable
+    $expected = "--remote-debugging-port=$port"
+
+    foreach ($shortcutFile in Get-ChildItem -LiteralPath $pinned -Filter '*.lnk' -ErrorAction SilentlyContinue) {
+        try {
+            $shortcut = $wsh.CreateShortcut($shortcutFile.FullName)
+            $targetPath = [string]$shortcut.TargetPath
+            $argsText = [string]$shortcut.Arguments
+            $name = [string]$shortcutFile.Name
+        } catch {
+            continue
+        }
+
+        $targetLooksCloudMusic = $targetPath -match '(?i)cloudmusic\.exe$' -or $targetPath -match '(?i)\\NetEase\\CloudMusic\\'
+        $nameLooksCloudMusic = $name -match '(?i)CloudMusic|NetEase'
+        if (-not ($targetLooksCloudMusic -or $nameLooksCloudMusic)) {
+            continue
+        }
+
+        $result['found'] = [int]$result['found'] + 1
+        if ((-not $targetPath -or -not (Test-Path $targetPath)) -and $cloudMusicExe) {
+            $targetPath = $cloudMusicExe
+        }
+        if (-not $targetPath -or -not (Test-Path $targetPath)) {
+            continue
+        }
+
+        $result['checked'] = [int]$result['checked'] + 1
+        if ($argsText -match [regex]::Escape($expected)) {
+            continue
+        }
+
+        $backupPath = "$($shortcutFile.FullName).tasklyric-backup"
+        if (-not (Test-Path $backupPath)) {
+            Copy-Item -LiteralPath $shortcutFile.FullName -Destination $backupPath -Force
+        }
+
+        $shortcut.TargetPath = $targetPath
+        $shortcut.Arguments = $expected
+        $shortcut.WorkingDirectory = Split-Path -Parent $targetPath
+        $shortcut.IconLocation = "$targetPath,0"
+        $shortcut.Description = 'Launch NetEase Cloud Music with the remote debug port required by TaskLyric.'
+        $shortcut.Save()
+
+        $result['repaired'] = [int]$result['repaired'] + 1
+        $result['paths'] = @($result['paths']) + $shortcutFile.FullName
+    }
+}
+
+$result | ConvertTo-Json -Compress
+""".replace("__PORT__", str(port))
+    payload = _powershell_json(command)
+    if isinstance(payload, dict):
+        return payload
+    return None
+
+
 def stop_cloudmusic() -> None:
     try:
         subprocess.run(
@@ -203,6 +299,7 @@ class TaskLyricBackgroundLauncher:
         self._last_restart_attempt = 0.0
         self._startup_grace_until = 0.0
         self._remote_missing_since = 0.0
+        self._last_shortcut_repair_check = 0.0
 
     def run(self) -> None:
         try:
@@ -220,6 +317,7 @@ class TaskLyricBackgroundLauncher:
         remote_ready = remote_debug_available(self.remote_debug_port)
         window_ready = has_cloudmusic_window()
         now = time.monotonic()
+        self._repair_cloudmusic_shortcuts_if_due(now)
         if remote_debug_process and not remote_ready:
             self._startup_grace_until = max(self._startup_grace_until, now + 30.0)
         running = process_running and (remote_ready or window_ready or now < self._startup_grace_until)
@@ -256,6 +354,13 @@ class TaskLyricBackgroundLauncher:
             self._startup_grace_until = 0.0
             self._remote_missing_since = 0.0
             self._stop_tasklyric()
+
+    def _repair_cloudmusic_shortcuts_if_due(self, now: float) -> None:
+        if self._last_shortcut_repair_check > 0 and now - self._last_shortcut_repair_check < SHORTCUT_REPAIR_INTERVAL_SECONDS:
+            return
+        self._last_shortcut_repair_check = now
+        repair_pinned_cloudmusic_shortcuts(self.remote_debug_port)
+
     def _ensure_tasklyric_running(self) -> None:
         process = self._tasklyric_process
         if process is not None and process.poll() is None:

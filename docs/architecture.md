@@ -45,3 +45,9 @@ The project still borrows ideas from earlier work:
 - Taskbar-Lyrics for taskbar-native lyric rendering direction
 
 These references inform the design, but TaskLyric is being implemented as its own runtime and host stack.
+
+## SMTC as a future generic media layer
+
+Windows SMTC is useful beyond NetEase Cloud Music because it exposes the active system media session for browsers and many players. TaskLyric should keep that capability behind an explicit generic-media mode instead of using it as an unconditional NetEase control fallback.
+
+The reason is routing: global SMTC/media-key commands go to Windows' current active media session. If a browser video is active, a fallback play/pause/next command can control the browser instead of NetEase Cloud Music. The NetEase-specific path should prefer the remote-debug bridge and direct CloudMusic window commands; SMTC can later be extracted into a separate universal media widget if the project needs that broader behavior.

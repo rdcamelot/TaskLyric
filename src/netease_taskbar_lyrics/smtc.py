@@ -242,11 +242,24 @@ class MediaSessionProvider:
         normalized = action.strip().lower()
         if not normalized:
             return False
+
+        remote_has_target = self._remote.has_target()
         if self._remote.send_control(normalized):
             return True
-        if self._helper.send_control(normalized):
+        if remote_has_target:
+            # A remote-debug NetEase page exists, so a failed command means our selector/API path
+            # needs fixing. Do not fall through to global SMTC/media keys, because those control
+            # the current system media session and can hit browser videos such as Bilibili.
+            return False
+
+        if self._window_probe.send_media_command(normalized, allow_global_fallback=False):
             return True
-        return self._window_probe.send_media_command(normalized)
+
+        helper_session = self._helper.get_current_session()
+        if helper_session and self._looks_like_netease_session(helper_session):
+            return self._helper.send_control(normalized)
+
+        return False
 
     def get_sessions(self) -> list[MediaSessionSnapshot]:
         try:

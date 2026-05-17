@@ -169,7 +169,7 @@ class CloudMusicWindowProbe:
     def has_player_window(self) -> bool:
         return self._pick_control_window(self._enumerate_cloudmusic_windows()) is not None
 
-    def send_media_command(self, action: str) -> bool:
+    def send_media_command(self, action: str, *, allow_global_fallback: bool = True) -> bool:
         normalized = action.strip().lower()
         app_command = ACTION_TO_APPCOMMAND.get(normalized)
         target_window = self._pick_control_window(self._enumerate_cloudmusic_windows())
@@ -179,6 +179,11 @@ class CloudMusicWindowProbe:
             user32.SendMessageW(target_window.hwnd, WM_APPCOMMAND, target_window.hwnd, lparam)
             return True
 
+        if not allow_global_fallback:
+            return False
+
+        # Global media keys target Windows' current media session. If a browser video is active,
+        # these keys will control the browser instead of NetEase, so callers must opt in.
         media_key = ACTION_TO_MEDIA_KEY.get(normalized)
         if media_key is None:
             return False
