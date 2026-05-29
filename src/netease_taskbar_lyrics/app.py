@@ -16,6 +16,7 @@ DEFAULT_POLL_INTERVAL_SECONDS = 1.2
 DEFAULT_TICK_INTERVAL_MS = 150
 AUTO_STOP_ABSENCE_SECONDS = 5.0
 SESSION_MISSING_GRACE_SECONDS = 3.5
+SYSTEM_RESUME_GAP_SECONDS = 8.0
 WAITING_TEXT = "等待网易云音乐开始播放"
 LOADING_PREFIX = "正在加载歌词"
 STOPPED_SUBTEXT = "TaskLyric"
@@ -59,6 +60,7 @@ class TaskbarLyricsApp:
         self._has_seen_cloudmusic = False
         self._missing_cloudmusic_since = 0.0
         self._session_missing_since = 0.0
+        self._last_loop_tick = time.monotonic()
         self._shutdown_complete = False
 
     def start(self) -> None:
@@ -78,6 +80,7 @@ class TaskbarLyricsApp:
 
         try:
             while not self._stop_event.is_set():
+                self._handle_possible_system_resume()
                 self._drain_session_queue()
                 self._drain_lyric_queue()
                 self._drain_control_queue()
@@ -107,6 +110,34 @@ class TaskbarLyricsApp:
 
             self._session_queue.put(session)
             self._stop_event.wait(self.poll_interval_seconds)
+
+    def _handle_possible_system_resume(self) -> None:
+        now = time.monotonic()
+        elapsed = now - self._last_loop_tick
+        self._last_loop_tick = now
+        if elapsed < SYSTEM_RESUME_GAP_SECONDS:
+            return
+
+        self._clear_session_queue()
+        self._session_missing_since = 0.0
+        self._missing_cloudmusic_since = 0.0
+        try:
+            self.provider.recover_after_system_resume()
+        except Exception as exc:
+            self.bridge.emit_event("tasklyric.live.resume_recover_error", {"message": str(exc), "gapSeconds": elapsed})
+
+        if self._active_session is not None:
+            self._active_session = _freeze_session_after_resume(self._active_session, now)
+            self._last_payload_key = None
+
+        self.bridge.emit_event("tasklyric.live.system_resume", {"gapSeconds": elapsed})
+
+    def _clear_session_queue(self) -> None:
+        while True:
+            try:
+                self._session_queue.get_nowait()
+            except queue.Empty:
+                return
 
     def _drain_session_queue(self) -> None:
         latest_session: MediaSessionSnapshot | None = None
@@ -365,6 +396,13 @@ class TaskbarLyricsApp:
             playback_state=playback_state,
             track_id=track_id,
         )
+
+
+def _freeze_session_after_resume(session: MediaSessionSnapshot, now: float) -> MediaSessionSnapshot:
+    # After system sleep/lock, elapsed monotonic time may be large while playback
+    # state is unknown. Freeze at the last confirmed position until a fresh
+    # NetEase remote-debug state arrives.
+    return replace(session, playback_status="Paused", position_ms=max(0, int(session.position_ms)), fetched_at=now)
 
 
 def _track_key(session: MediaSessionSnapshot) -> str:

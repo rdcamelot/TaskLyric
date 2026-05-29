@@ -218,6 +218,27 @@ remote-debug 路径最关键，因为当前网易云桌面版的 Chromium render
 - 是否存在旧的 `pythonw.exe` TaskLyric 进程
 - 是否重新执行过推荐安装命令
 
+
+快速验证媒体路由和播放状态逻辑：
+
+```powershell
+python scripts\verify_media_logic.py
+```
+
+查看当前网易云、remote-debug、SMTC 和 TaskLyric 实际选择的媒体源：
+
+```powershell
+python scripts\verify_media_logic.py --live
+```
+
+持续观察播放/暂停、锁屏恢复后的状态变化：
+
+```powershell
+python scripts\verify_media_logic.py --watch-seconds 60 --watch-interval 1
+```
+
+正常情况下，`selectedSession.sourceAppUserModelId` 应该是 `cloudmusic.remote-debug`，不应该变成 Chrome、Edge、Bilibili 或其它网页播放器来源。
+
 ## 免责声明
 
 本项目仅供技术学习和研究交流使用。

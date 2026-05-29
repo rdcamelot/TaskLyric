@@ -1229,10 +1229,12 @@ def _normalize_playback_state(raw: Any) -> str:
         return raw.strip().title()
     if isinstance(raw, (int, float)):
         numeric = int(raw)
+        # NetEase's playingState uses 2 for playing and 1 for paused. Keep this
+        # aligned with _normalize_snapshot_playback_state and the restore path.
         if numeric == 1:
-            return "Playing"
-        if numeric == 2:
             return "Paused"
+        if numeric == 2:
+            return "Playing"
         if numeric == 0:
             return "Stopped"
     return "Unknown"

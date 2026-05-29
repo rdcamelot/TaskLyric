@@ -218,6 +218,27 @@ If sync breaks after a NetEase update, check:
 - Whether an old TaskLyric `pythonw.exe` process is still running
 - Whether the recommended install command has been rerun
 
+
+Verify media routing and playback-state logic:
+
+```powershell
+python scripts\verify_media_logic.py
+```
+
+Inspect the current NetEase, remote-debug, SMTC, and selected TaskLyric media source:
+
+```powershell
+python scripts\verify_media_logic.py --live
+```
+
+Watch play/pause or lock-screen recovery state changes continuously:
+
+```powershell
+python scripts\verify_media_logic.py --watch-seconds 60 --watch-interval 1
+```
+
+Normally, `selectedSession.sourceAppUserModelId` should be `cloudmusic.remote-debug`, not Chrome, Edge, Bilibili, or another browser media source.
+
 ## Disclaimer
 
 This project is for technical research and learning purposes only.

@@ -212,9 +212,10 @@ static class MediaSessionReader
             return neteaseCandidates.OrderByDescending(item => item.Score).First().Session;
         }
 
-        return candidates.Count == 1
-            ? candidates[0].Session
-            : candidates.OrderByDescending(item => item.Score).First().Session;
+        // TaskLyric is NetEase-specific. After lock/unlock Windows can expose a
+        // browser video as the only active SMTC session, so falling back to any
+        // media session would make taskbar controls operate the browser.
+        return null;
     }
 
     private static async Task<MediaSessionSnapshot?> TryBuildSnapshotAsync(GlobalSystemMediaTransportControlsSession session)

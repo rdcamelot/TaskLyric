@@ -190,6 +190,8 @@ class _DotNetMediaSessionWatcher:
 
 class MediaSessionProvider:
     def __init__(self, *, remote_debug_port: int | None = 9222) -> None:
+        self._provider_lock = threading.RLock()
+        self._remote_debug_port = remote_debug_port
         self._window_probe = CloudMusicWindowProbe()
         self._remote = CloudMusicRemoteBridge(port=remote_debug_port)
         self._helper = _DotNetMediaSessionWatcher()
@@ -198,15 +200,29 @@ class MediaSessionProvider:
         self._fallback_anchor = time.monotonic()
 
     def shutdown(self) -> None:
-        self._remote.shutdown()
-        self._helper.shutdown()
+        with self._provider_lock:
+            self._remote.shutdown()
+            self._helper.shutdown()
+
+    def recover_after_system_resume(self) -> None:
+        with self._provider_lock:
+            self._remote.shutdown()
+            self._helper.shutdown()
+            self._remote = CloudMusicRemoteBridge(port=self._remote_debug_port)
+            self._helper = _DotNetMediaSessionWatcher()
+            self._reset_fallback_progress()
 
     def has_cloudmusic_activity(self) -> bool:
-        if self._remote.has_target():
-            return True
-        return self._window_probe.has_player_window()
+        with self._provider_lock:
+            if self._remote.has_target():
+                return True
+            return self._window_probe.has_player_window()
 
     def get_current_session(self) -> MediaSessionSnapshot | None:
+        with self._provider_lock:
+            return self._get_current_session_unlocked()
+
+    def _get_current_session_unlocked(self) -> MediaSessionSnapshot | None:
         remote_session = self._get_remote_session()
         if remote_session is not None:
             self._reset_fallback_progress()
@@ -216,29 +232,28 @@ class MediaSessionProvider:
             return None
 
         helper_session = self._helper.get_current_session()
-        if helper_session and self._looks_like_netease_session(helper_session):
+        if helper_session and self._source_looks_like_netease(helper_session):
             self._reset_fallback_progress()
             return helper_session
 
         sessions = self.get_sessions()
         if sessions:
-            netease_sessions = [
-                session
-                for session in sessions
-                if any(keyword in session.source_app_user_model_id.lower() for keyword in NETEASE_KEYWORDS)
-            ]
+            # Do not accept an arbitrary single SMTC session. After lock/unlock,
+            # Windows often promotes the browser video session to the only active
+            # media session, and global SMTC would then make TaskLyric display or
+            # control the browser instead of NetEase Cloud Music.
+            netease_sessions = [session for session in sessions if self._looks_like_netease_session(session)]
             if netease_sessions:
-                sessions = netease_sessions
-            elif len(sessions) != 1:
-                sessions = []
-
-            if sessions:
                 self._reset_fallback_progress()
-                return max(sessions, key=self._session_score)
+                return max(netease_sessions, key=self._session_score)
 
         return self._get_window_fallback_session()
 
     def control(self, action: str) -> bool:
+        with self._provider_lock:
+            return self._control_unlocked(action)
+
+    def _control_unlocked(self, action: str) -> bool:
         normalized = action.strip().lower()
         if not normalized:
             return False
@@ -255,10 +270,11 @@ class MediaSessionProvider:
         if self._window_probe.send_media_command(normalized, allow_global_fallback=False):
             return True
 
-        helper_session = self._helper.get_current_session()
-        if helper_session and self._looks_like_netease_session(helper_session):
-            return self._helper.send_control(normalized)
-
+        # Do not fall back to the .NET SMTC control command here. Older built
+        # helper binaries select Windows' preferred media session internally,
+        # which can become a browser video after lock/unlock. If the NetEase
+        # remote bridge and direct CloudMusic window command both fail, failing
+        # closed is safer than controlling the wrong app.
         return False
 
     def get_sessions(self) -> list[MediaSessionSnapshot]:
@@ -358,10 +374,14 @@ class MediaSessionProvider:
         )
 
     def _looks_like_netease_session(self, session: MediaSessionSnapshot) -> bool:
-        source = session.source_app_user_model_id.lower()
-        if any(keyword in source for keyword in NETEASE_KEYWORDS):
+        if self._source_looks_like_netease(session):
             return True
         return self._window_probe.matches_current_track(session.title, session.artist)
+
+    @staticmethod
+    def _source_looks_like_netease(session: MediaSessionSnapshot) -> bool:
+        source = session.source_app_user_model_id.lower()
+        return any(keyword in source for keyword in NETEASE_KEYWORDS)
 
     def _get_window_fallback_session(self) -> MediaSessionSnapshot | None:
         track = self._window_probe.get_current_track()
@@ -374,14 +394,11 @@ class MediaSessionProvider:
         if track_key != self._fallback_track_key:
             self._fallback_track_key = track_key
             self._fallback_position_ms = 0
-            self._fallback_anchor = now
-        else:
-            elapsed_ms = max(0, int((now - self._fallback_anchor) * 1000))
-            self._fallback_position_ms += elapsed_ms
-            self._fallback_anchor = now
-            if track.duration_ms > 0:
-                self._fallback_position_ms = min(self._fallback_position_ms, track.duration_ms)
+        self._fallback_anchor = now
 
+        # A window title proves the current track identity, not playback state or
+        # progress. Treat it as paused so lock/resume or remote-debug recovery
+        # gaps do not make lyrics scroll while NetEase is actually paused.
         return MediaSessionSnapshot(
             source_app_user_model_id=WINDOW_FALLBACK_SOURCE,
             title=track.title,
@@ -390,7 +407,7 @@ class MediaSessionProvider:
             position_ms=self._fallback_position_ms,
             duration_ms=track.duration_ms,
             start_time_ms=0,
-            playback_status="Playing",
+            playback_status="Paused",
             fetched_at=now,
             song_id=track.song_id,
             detection_source="window",
