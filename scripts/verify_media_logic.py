@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import queue
 import time
 from pathlib import Path
 import sys
@@ -12,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.netease_taskbar_lyrics.app import _freeze_session_after_resume  # noqa: E402
+from src.netease_taskbar_lyrics.app import TaskbarLyricsApp, _freeze_session_after_resume  # noqa: E402
 from src.netease_taskbar_lyrics.cloudmusic import CloudMusicTrack, CloudMusicWindowProbe  # noqa: E402
 from src.netease_taskbar_lyrics.cloudmusic_remote import (  # noqa: E402
     CloudMusicRemoteBridge,
@@ -107,6 +108,32 @@ class FakeWindowWithTrack(FakeWindow):
             source_window_class="OrpheusBrowserHost",
             source_window_title="Song - Artist",
         )
+
+
+class FakeRecoverProvider:
+    def __init__(self) -> None:
+        self.recover_count = 0
+        self.control_called = False
+
+    def recover_after_system_resume(self) -> None:
+        self.recover_count += 1
+
+    def control(self, action: str) -> bool:
+        self.control_called = True
+        return False
+
+
+class FakeBridge:
+    def __init__(self, commands: list[dict[str, object]] | None = None) -> None:
+        self.commands = list(commands or [])
+        self.events: list[tuple[str, dict[str, object]]] = []
+
+    def take_pending_command(self) -> dict[str, object] | None:
+        return self.commands.pop(0) if self.commands else None
+
+    def emit_event(self, name: str, payload: object) -> int:
+        self.events.append((name, payload if isinstance(payload, dict) else {}))
+        return 0
 
 
 def provider() -> MediaSessionProvider:
@@ -217,6 +244,49 @@ def verify_control_fails_closed() -> None:
     instance.shutdown()
 
 
+def verify_system_resume_command_recovers_provider() -> None:
+    app = object.__new__(TaskbarLyricsApp)
+    app.provider = FakeRecoverProvider()
+    app.bridge = FakeBridge([
+        {"action": "system-resume", "source": "windows-session", "reason": "session-unlock"}
+    ])
+    app._session_queue = queue.Queue()
+    app._session_queue.put(snapshot("Chrome"))
+    app._active_session = MediaSessionSnapshot(
+        source_app_user_model_id="NetEase.CloudMusic",
+        title="Song",
+        artist="Artist",
+        album_title="",
+        position_ms=33000,
+        duration_ms=180000,
+        start_time_ms=0,
+        playback_status="Playing",
+        fetched_at=time.monotonic() - 120,
+        song_id=123,
+        detection_source="test",
+    )
+    app._session_missing_since = time.monotonic() - 10
+    app._missing_cloudmusic_since = time.monotonic() - 10
+    app._last_loop_tick = time.monotonic() - 10
+    app._last_payload_key = ("stale",)
+
+    app._drain_control_queue()
+
+    assert app.provider.recover_count == 1
+    assert app.provider.control_called is False
+    assert app._session_queue.empty()
+    assert app._session_missing_since == 0.0
+    assert app._missing_cloudmusic_since == 0.0
+    assert app._active_session.playback_status == "Paused"
+    assert app._active_session.position_ms == 33000
+    assert app._active_session.estimated_position_ms() == 33000
+    assert app._last_payload_key is None
+    assert app.bridge.events[-1] == (
+        "tasklyric.live.system_resume",
+        {"reason": "session-unlock", "source": "windows-session"},
+    )
+
+
 def run_static_verification() -> None:
     verify_playback_state_mapping()
     verify_browser_smtc_is_rejected()
@@ -226,6 +296,7 @@ def run_static_verification() -> None:
     verify_resume_freeze_does_not_jump_progress()
     verify_provider_recovery_rebuilds_watchers()
     verify_control_fails_closed()
+    verify_system_resume_command_recovers_provider()
 
 
 def snapshot_to_dict(session: MediaSessionSnapshot | None) -> dict[str, object] | None:

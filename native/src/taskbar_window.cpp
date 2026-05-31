@@ -4,6 +4,7 @@
 
 #include <windows.h>
 #include <windowsx.h>
+#include <wtsapi32.h>
 
 #include <algorithm>
 #include <cmath>
@@ -34,13 +35,13 @@ constexpr int kControlButtonGap = 5;
 constexpr int kControlCompactButtonSize = 21;
 constexpr int kControlCompactButtonGap = 3;
 constexpr int kControlHitPadding = 5;
-constexpr int kControlRightInset = 16;
-constexpr int kControlCompactRightInset = 12;
-constexpr int kControlMinWidth = 360;
-constexpr int kControlCompactMinWidth = 290;
+constexpr int kControlRightInset = 15;
+constexpr int kControlCompactRightInset = 11;
+constexpr int kControlMinWidth = 350;
+constexpr int kControlCompactMinWidth = 276;
 constexpr int kControlTextGap = 12;
 constexpr int kControlCompactTextGap = 8;
-constexpr int kControlCompactMinTextWidth = 92;
+constexpr int kControlCompactMinTextWidth = 84;
 
 void append_debug_line(const wchar_t* line) {
     const std::filesystem::path path = std::filesystem::current_path() / "logs" / "tasklyric-window.log";
@@ -385,8 +386,11 @@ std::wstring TaskbarWindow::snapshot_json() const {
 
 std::wstring TaskbarWindow::take_pending_command_json() {
     std::scoped_lock lock(mutex_);
-    std::wstring value = pending_command_json_;
-    pending_command_json_.clear();
+    if (pending_command_queue_.empty()) {
+        return {};
+    }
+    std::wstring value = std::move(pending_command_queue_.front());
+    pending_command_queue_.pop_front();
     return value;
 }
 
@@ -481,6 +485,29 @@ LRESULT CALLBACK TaskbarWindow::window_proc(HWND hwnd, UINT message, WPARAM wpar
         self->set_pressed_action_locked(TaskbarControlAction::none);
         return 0;
     }
+    case WM_WTSSESSION_CHANGE: {
+        std::scoped_lock lock(self->mutex_);
+        if (wparam == WTS_SESSION_LOCK) {
+            self->session_locked_ = true;
+            append_debug_line(L"system event observed: session-lock");
+        } else if (wparam == WTS_SESSION_UNLOCK || wparam == WTS_SESSION_LOGON) {
+            self->session_locked_ = false;
+            self->queue_system_event_locked(L"session-unlock", L"windows-session");
+        }
+        return 0;
+    }
+    case WM_POWERBROADCAST: {
+        if (wparam == PBT_APMRESUMEAUTOMATIC || wparam == PBT_APMRESUMESUSPEND || wparam == PBT_APMRESUMECRITICAL) {
+            std::scoped_lock lock(self->mutex_);
+            self->queue_system_event_locked(L"power-resume", L"windows-power");
+            return TRUE;
+        }
+        if (wparam == PBT_APMSUSPEND) {
+            append_debug_line(L"system event observed: power-suspend");
+            return TRUE;
+        }
+        break;
+    }
     case WM_SIZE: {
         std::scoped_lock lock(self->mutex_);
         self->window_width_ = static_cast<UINT>(LOWORD(lparam));
@@ -509,6 +536,13 @@ LRESULT CALLBACK TaskbarWindow::window_proc(HWND hwnd, UINT message, WPARAM wpar
         return 0;
     }
     case WM_DESTROY:
+        {
+            std::scoped_lock lock(self->mutex_);
+            if (self->session_notifications_registered_) {
+                WTSUnRegisterSessionNotification(hwnd);
+                self->session_notifications_registered_ = false;
+            }
+        }
         KillTimer(hwnd, kLayoutTimerId);
         PostQuitMessage(0);
         return 0;
@@ -566,8 +600,10 @@ void TaskbarWindow::thread_main() {
         window_width_ = kPreferredWidth;
         window_height_ = kFallbackHeight;
         ui_state_ = {};
-        pending_command_json_.clear();
+        pending_command_queue_.clear();
         tracking_mouse_leave_ = false;
+        session_locked_ = false;
+        session_notifications_registered_ = false;
         last_layout_ = {};
         target_screen_rect_ = {};
         animated_screen_rect_ = {};
@@ -590,6 +626,13 @@ void TaskbarWindow::thread_main() {
         }
         return;
     }
+
+    const bool session_registered = WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION) != FALSE;
+    {
+        std::scoped_lock lock(mutex_);
+        session_notifications_registered_ = session_registered;
+    }
+    append_debug_line(session_registered ? L"system event: WTS session notifications registered" : L"system event: WTS session notification registration failed");
 
     ShowWindow(hwnd, SW_SHOWNOACTIVATE);
     SetTimer(hwnd, kLayoutTimerId, kLayoutTimerIntervalMs, nullptr);
@@ -617,7 +660,7 @@ void TaskbarWindow::thread_main() {
         window_width_ = 0;
         window_height_ = 0;
         ui_state_ = {};
-        pending_command_json_.clear();
+        pending_command_queue_.clear();
         tracking_mouse_leave_ = false;
         last_layout_ = {};
         target_screen_rect_ = {};
@@ -734,7 +777,7 @@ bool TaskbarWindow::compute_target_rect_locked(RECT* screen_rect) {
             return false;
         }
 
-        const int window_height = std::clamp(height - 2, 32, 60);
+        const int window_height = std::clamp(height - 2, 33, 58);
         const int y = std::max(0, (height - window_height) / 2);
 
         RECT start_rect{};
@@ -1052,8 +1095,24 @@ void TaskbarWindow::queue_control_locked(TaskbarControlAction action) {
         }
     }
 
-    pending_command_json_ = std::wstring(L"{\"action\":\"") + std::wstring(command) + L"\",\"source\":\"taskbar-control\"}";
+    pending_command_queue_.push_back(std::wstring(L"{\"action\":\"") + std::wstring(command) + L"\",\"source\":\"taskbar-control\"}");
     append_debug_line((std::wstring(L"control queued: ") + std::wstring(command)).c_str());
+    if (hwnd_) {
+        PostMessageW(hwnd_, kRefreshMessage, 0, 0);
+    }
+}
+
+void TaskbarWindow::queue_system_event_locked(std::wstring_view reason, std::wstring_view source) {
+    if (reason.empty()) {
+        return;
+    }
+
+    pending_command_queue_.push_back(std::wstring(L"{\"action\":\"system-resume\",\"source\":\"")
+        + std::wstring(source.empty() ? L"windows-system" : source)
+        + L"\",\"reason\":\""
+        + std::wstring(reason)
+        + L"\"}");
+    append_debug_line((std::wstring(L"system event queued: ") + std::wstring(reason)).c_str());
     if (hwnd_) {
         PostMessageW(hwnd_, kRefreshMessage, 0, 0);
     }

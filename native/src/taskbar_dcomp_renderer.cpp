@@ -83,6 +83,11 @@ float aligned_text_origin_x(std::wstring_view align, float left, float available
     return left;
 }
 
+float smoothstep(float value) {
+    const float t = std::clamp(value, 0.0f, 1.0f);
+    return t * t * (3.0f - 2.0f * t);
+}
+
 int resolve_effective_progress_ms(
     const TaskbarLyricState& state,
     ULONGLONG now_tick_ms,
@@ -137,15 +142,16 @@ float resolve_marquee_offset(
         return 0.0f;
     }
 
-    constexpr int kHoldStartMs = 900;
-    constexpr float kScrollPixelsPerSecond = 30.0f;
+    constexpr int kHoldStartMs = 650;
+    constexpr float kScrollPixelsPerSecond = 34.0f;
     const int elapsed_ms = std::max(0, effective_progress_ms - *anchor_progress_ms);
     if (elapsed_ms <= kHoldStartMs) {
         return 0.0f;
     }
 
-    const float offset = static_cast<float>(elapsed_ms - kHoldStartMs) * kScrollPixelsPerSecond / 1000.0f;
-    return std::min(overflow, offset);
+    const float raw_offset = static_cast<float>(elapsed_ms - kHoldStartMs) * kScrollPixelsPerSecond / 1000.0f;
+    const float progress = overflow > 1.0f ? raw_offset / overflow : 1.0f;
+    return overflow * smoothstep(progress);
 }
 
 constexpr wchar_t kThemePersonalizeKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize";
@@ -211,28 +217,28 @@ VisualPalette resolve_palette(const TaskbarConfig& config) {
 
     if (light_theme) {
         return {
-            D2D1_COLOR_F{0.12f, 0.14f, 0.18f, 0.98f},
-            D2D1_COLOR_F{0.36f, 0.42f, 0.50f, 0.90f},
+            D2D1_COLOR_F{0.10f, 0.12f, 0.16f, 0.98f},
+            D2D1_COLOR_F{0.32f, 0.38f, 0.46f, 0.92f},
+            D2D1_COLOR_F{1.0f, 1.0f, 1.0f, 0.32f},
+            D2D1_COLOR_F{1.0f, 1.0f, 1.0f, 0.10f},
+            D2D1_COLOR_F{0.985f, 0.990f, 1.000f, 0.68f},
+            D2D1_COLOR_F{0.82f, 0.86f, 0.92f, 0.62f},
             D2D1_COLOR_F{1.0f, 1.0f, 1.0f, 0.34f},
-            D2D1_COLOR_F{1.0f, 1.0f, 1.0f, 0.12f},
-            D2D1_COLOR_F{0.985f, 0.990f, 1.000f, 0.80f},
-            D2D1_COLOR_F{0.84f, 0.87f, 0.92f, 0.78f},
-            D2D1_COLOR_F{1.0f, 1.0f, 1.0f, 0.42f},
-            D2D1_COLOR_F{1.0f, 1.0f, 1.0f, 0.56f},
-            D2D1_COLOR_F{0.79f, 0.83f, 0.89f, 0.58f},
+            D2D1_COLOR_F{1.0f, 1.0f, 1.0f, 0.48f},
+            D2D1_COLOR_F{0.72f, 0.78f, 0.86f, 0.46f},
         };
     }
 
     return {
-        D2D1_COLOR_F{0.975f, 0.982f, 0.992f, 0.98f},
-        D2D1_COLOR_F{0.75f, 0.79f, 0.85f, 0.88f},
-        D2D1_COLOR_F{0.03f, 0.04f, 0.06f, 0.64f},
-        D2D1_COLOR_F{0.03f, 0.04f, 0.06f, 0.20f},
-        D2D1_COLOR_F{0.99f, 0.995f, 1.0f, 0.18f},
-        D2D1_COLOR_F{1.0f, 1.0f, 1.0f, 0.24f},
-        D2D1_COLOR_F{1.0f, 1.0f, 1.0f, 0.09f},
-        D2D1_COLOR_F{1.0f, 1.0f, 1.0f, 0.24f},
-        D2D1_COLOR_F{0.04f, 0.05f, 0.08f, 0.34f},
+        D2D1_COLOR_F{0.985f, 0.990f, 1.000f, 0.98f},
+        D2D1_COLOR_F{0.78f, 0.82f, 0.88f, 0.92f},
+        D2D1_COLOR_F{0.02f, 0.025f, 0.04f, 0.60f},
+        D2D1_COLOR_F{0.02f, 0.025f, 0.04f, 0.18f},
+        D2D1_COLOR_F{0.96f, 0.985f, 1.0f, 0.15f},
+        D2D1_COLOR_F{1.0f, 1.0f, 1.0f, 0.20f},
+        D2D1_COLOR_F{1.0f, 1.0f, 1.0f, 0.08f},
+        D2D1_COLOR_F{1.0f, 1.0f, 1.0f, 0.21f},
+        D2D1_COLOR_F{0.03f, 0.04f, 0.065f, 0.30f},
     };
 }}  // namespace
 
@@ -488,8 +494,6 @@ bool TaskbarDCompRenderer::render(const TaskbarConfig& config, const TaskbarLyri
     const VisualPalette palette = resolve_palette(config);
     const DWRITE_TEXT_ALIGNMENT alignment = to_text_alignment(config.align);
     const FLOAT base_main_font_size = static_cast<FLOAT>(std::clamp(config.font_size, 13, 36));
-    const FLOAT main_font_size = has_sub_text ? std::max(15.0f, base_main_font_size - 1.0f) : base_main_font_size;
-    const FLOAT sub_font_size = has_sub_text ? std::max(12.0f, main_font_size - 3.5f) : std::max(12.0f, base_main_font_size - 4.0f);
     const float width_f = static_cast<float>(width);
     const float height_f = static_cast<float>(height);
     const ULONGLONG now_tick_ms = GetTickCount64();
@@ -501,31 +505,46 @@ bool TaskbarDCompRenderer::render(const TaskbarConfig& config, const TaskbarLyri
         &last_playback_state_
     );
     const TaskbarControlLayout control_layout = compute_taskbar_control_layout(width, height);
-    const float card_inset_x = debug_mode ? 0.0f : 8.0f;
-    const float card_inset_y = debug_mode ? 0.0f : 7.0f;
-    const float card_radius = debug_mode ? 0.0f : 14.0f;
+    const float card_inset_x = debug_mode ? 0.0f : 7.0f;
+    const float card_inset_y = debug_mode ? 0.0f : 5.0f;
+    const float card_radius = debug_mode ? 0.0f : 12.5f;
     const D2D1_MATRIX_3X2_F identity = {1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f};
     const D2D1_COLOR_F transparent = D2D1_COLOR_F{0.0f, 0.0f, 0.0f, 0.0f};
     const D2D1_RECT_F full_rect = {0.0f, 0.0f, width_f, height_f};
     const D2D1_ROUNDED_RECT glass_rect = {{card_inset_x, card_inset_y, width_f - card_inset_x, height_f - card_inset_y}, card_radius, card_radius};
     const D2D1_ROUNDED_RECT glass_inner = {{glass_rect.rect.left + 1.0f, glass_rect.rect.top + 1.0f, glass_rect.rect.right - 1.0f, glass_rect.rect.bottom - 1.0f}, std::max(0.0f, card_radius - 1.0f), std::max(0.0f, card_radius - 1.0f)};
     const float text_inset_x = debug_mode ? 16.0f : (glass_rect.rect.left + 14.0f);
-    const float text_right = control_layout.visible ? std::max(text_inset_x + 72.0f, static_cast<float>(control_layout.text_rect.right - 4)) : (width_f - text_inset_x);
-    const float content_top = debug_mode ? 5.0f : (glass_rect.rect.top + 5.0f);
-    const float content_bottom = debug_mode ? (height_f - 5.0f) : (glass_rect.rect.bottom - 4.0f);
+    const float text_right = control_layout.visible ? std::max(text_inset_x + 70.0f, static_cast<float>(control_layout.text_rect.right - 5)) : (width_f - text_inset_x);
+    const float content_top = debug_mode ? 5.0f : (glass_rect.rect.top + 3.5f);
+    const float content_bottom = debug_mode ? (height_f - 5.0f) : (glass_rect.rect.bottom - 3.5f);
     const float content_height = std::max(18.0f, content_bottom - content_top);
-    const float sub_band_height = has_sub_text ? std::max(sub_font_size + 4.5f, content_height * 0.40f) : 0.0f;
-    const float main_band_bottom = has_sub_text ? std::max(content_top + 10.0f, content_bottom - sub_band_height + 1.5f) : content_bottom;
-    const D2D1_RECT_F main_rect = {text_inset_x, content_top - 0.5f, text_right, has_sub_text ? main_band_bottom : content_bottom};
-    const D2D1_RECT_F sub_rect = {text_inset_x, has_sub_text ? (main_band_bottom - 0.5f) : 0.0f, text_right, has_sub_text ? (content_bottom + 1.5f) : 0.0f};
+
+    FLOAT main_font_size = has_sub_text ? std::max(15.0f, base_main_font_size - 0.8f) : base_main_font_size;
+    FLOAT sub_font_size = has_sub_text ? std::max(13.2f, main_font_size - 3.0f) : std::max(12.5f, base_main_font_size - 4.0f);
+    float main_line_height = has_sub_text ? (main_font_size + 4.0f) : (main_font_size + 6.0f);
+    float sub_line_height = has_sub_text ? (sub_font_size + 5.0f) : 0.0f;
+    const float line_gap = has_sub_text ? 0.5f : 0.0f;
+    const float required_height = main_line_height + sub_line_height + line_gap;
+    if (has_sub_text && required_height > content_height) {
+        const float scale = std::clamp((content_height - line_gap) / std::max(1.0f, main_line_height + sub_line_height), 0.82f, 1.0f);
+        main_font_size = std::max(14.0f, main_font_size * scale);
+        sub_font_size = std::max(12.5f, sub_font_size * scale);
+        main_line_height = main_font_size + 3.2f;
+        sub_line_height = sub_font_size + 4.2f;
+    }
+
+    const float total_line_height = has_sub_text ? (main_line_height + sub_line_height + line_gap) : main_line_height;
+    const float line_top = content_top + std::max(0.0f, (content_height - total_line_height) * 0.5f);
+    const D2D1_RECT_F main_rect = {text_inset_x, line_top, text_right, std::min(content_bottom, line_top + main_line_height)};
+    const D2D1_RECT_F sub_rect = {text_inset_x, has_sub_text ? (main_rect.bottom + line_gap) : 0.0f, text_right, has_sub_text ? std::min(content_bottom + 1.0f, main_rect.bottom + line_gap + sub_line_height) : 0.0f};
     const D2D1_RECT_F main_glow = {main_rect.left, main_rect.top + 1.6f, main_rect.right, main_rect.bottom + 1.6f};
     const D2D1_RECT_F main_shadow = {main_rect.left, main_rect.top + 0.8f, main_rect.right, main_rect.bottom + 0.8f};
     const D2D1_RECT_F sub_glow = {sub_rect.left, sub_rect.top + 1.0f, sub_rect.right, sub_rect.bottom + 1.0f};
     const D2D1_RECT_F sub_shadow = {sub_rect.left, sub_rect.top + 0.55f, sub_rect.right, sub_rect.bottom + 0.55f};
-    const D2D1_POINT_2F top_highlight_start = {glass_rect.rect.left + 14.0f, glass_rect.rect.top + 1.25f};
-    const D2D1_POINT_2F top_highlight_end = {glass_rect.rect.right - 14.0f, glass_rect.rect.top + 1.25f};
-    const D2D1_POINT_2F bottom_edge_start = {glass_rect.rect.left + 13.0f, glass_rect.rect.bottom - 1.15f};
-    const D2D1_POINT_2F bottom_edge_end = {glass_rect.rect.right - 13.0f, glass_rect.rect.bottom - 1.15f};
+    const D2D1_POINT_2F top_highlight_start = {glass_rect.rect.left + 13.0f, glass_rect.rect.top + 1.20f};
+    const D2D1_POINT_2F top_highlight_end = {glass_rect.rect.right - 13.0f, glass_rect.rect.top + 1.20f};
+    const D2D1_POINT_2F bottom_edge_start = {glass_rect.rect.left + 12.0f, glass_rect.rect.bottom - 1.05f};
+    const D2D1_POINT_2F bottom_edge_end = {glass_rect.rect.right - 12.0f, glass_rect.rect.bottom - 1.05f};
     const D2D1_COLOR_F control_icon_color = light_theme ? D2D1_COLOR_F{0.14f, 0.17f, 0.22f, 0.96f} : D2D1_COLOR_F{0.98f, 0.99f, 1.0f, 0.94f};
     const D2D1_COLOR_F control_button_color = light_theme ? D2D1_COLOR_F{1.0f, 1.0f, 1.0f, 0.16f} : D2D1_COLOR_F{1.0f, 1.0f, 1.0f, 0.10f};
     const D2D1_COLOR_F control_button_hot_color = light_theme ? D2D1_COLOR_F{1.0f, 1.0f, 1.0f, 0.28f} : D2D1_COLOR_F{1.0f, 1.0f, 1.0f, 0.18f};

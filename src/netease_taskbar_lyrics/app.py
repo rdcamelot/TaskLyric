@@ -118,19 +118,30 @@ class TaskbarLyricsApp:
         if elapsed < SYSTEM_RESUME_GAP_SECONDS:
             return
 
+        self._recover_after_system_event(reason="loop-gap", source="main-loop", gap_seconds=elapsed)
+
+    def _recover_after_system_event(self, *, reason: str, source: str, gap_seconds: float | None = None) -> None:
+        now = time.monotonic()
+        self._last_loop_tick = now
         self._clear_session_queue()
         self._session_missing_since = 0.0
         self._missing_cloudmusic_since = 0.0
         try:
             self.provider.recover_after_system_resume()
         except Exception as exc:
-            self.bridge.emit_event("tasklyric.live.resume_recover_error", {"message": str(exc), "gapSeconds": elapsed})
+            payload = {"message": str(exc), "reason": reason, "source": source}
+            if gap_seconds is not None:
+                payload["gapSeconds"] = gap_seconds
+            self.bridge.emit_event("tasklyric.live.resume_recover_error", payload)
 
         if self._active_session is not None:
             self._active_session = _freeze_session_after_resume(self._active_session, now)
             self._last_payload_key = None
 
-        self.bridge.emit_event("tasklyric.live.system_resume", {"gapSeconds": elapsed})
+        payload = {"reason": reason, "source": source}
+        if gap_seconds is not None:
+            payload["gapSeconds"] = gap_seconds
+        self.bridge.emit_event("tasklyric.live.system_resume", payload)
 
     def _clear_session_queue(self) -> None:
         while True:
@@ -224,6 +235,13 @@ class TaskbarLyricsApp:
 
             action = str(payload.get("action") or "").strip().lower()
             if not action:
+                continue
+
+            if action == "system-resume":
+                self._recover_after_system_event(
+                    reason=str(payload.get("reason") or "native-system-event"),
+                    source=str(payload.get("source") or "native"),
+                )
                 continue
 
             ok = False

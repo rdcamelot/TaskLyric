@@ -2,6 +2,7 @@
 
 #include <windows.h>
 
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -93,6 +94,7 @@ private:
     void set_hot_action_locked(TaskbarControlAction action);
     void set_pressed_action_locked(TaskbarControlAction action);
     void queue_control_locked(TaskbarControlAction action);
+    void queue_system_event_locked(std::wstring_view reason, std::wstring_view source);
     void track_mouse_leave();
     void reset_renderer_locked(const wchar_t* reason);
     std::wstring snapshot_json_locked() const;
@@ -117,7 +119,7 @@ private:
     TaskbarConfig config_{};
     TaskbarLyricState lyric_state_{};
     TaskbarWindowUiState ui_state_{};
-    std::wstring pending_command_json_;
+    std::deque<std::wstring> pending_command_queue_;
     TaskbarLayout last_layout_{};
     RECT target_screen_rect_{};
     RECT animated_screen_rect_{};
