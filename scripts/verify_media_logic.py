@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import queue
+import threading
 import time
 from pathlib import Path
 import sys
@@ -121,6 +122,20 @@ class FakeRecoverProvider:
     def control(self, action: str) -> bool:
         self.control_called = True
         return False
+
+
+class FakeControlProvider:
+    def __init__(self) -> None:
+        self.control_actions: list[str] = []
+        self.get_current_session_called = False
+
+    def control(self, action: str) -> bool:
+        self.control_actions.append(action)
+        return True
+
+    def get_current_session(self) -> MediaSessionSnapshot | None:
+        self.get_current_session_called = True
+        return None
 
 
 class FakeBridge:
@@ -244,6 +259,42 @@ def verify_control_fails_closed() -> None:
     instance.shutdown()
 
 
+def verify_play_pause_control_does_not_optimistically_flip_state() -> None:
+    app = object.__new__(TaskbarLyricsApp)
+    app.provider = FakeControlProvider()
+    app.bridge = FakeBridge([{"action": "pause", "source": "taskbar-control"}])
+    app._stop_event = threading.Event()
+    app._stop_event.set()
+    app._session_queue = queue.Queue()
+    app._active_track_key = "track"
+    app._pending_track_key = ""
+    app._main_timeline = object()
+    app._translation_timeline = object()
+    app._resolved_song_id = 123
+    app._last_payload_key = ("stale",)
+    app._active_session = MediaSessionSnapshot(
+        source_app_user_model_id="NetEase.CloudMusic",
+        title="Song",
+        artist="Artist",
+        album_title="",
+        position_ms=33000,
+        duration_ms=180000,
+        start_time_ms=0,
+        playback_status="Playing",
+        fetched_at=time.monotonic() - 1,
+        song_id=123,
+        detection_source="test",
+    )
+
+    app._drain_control_queue()
+
+    assert app.provider.control_actions == ["pause"]
+    assert app._active_session.playback_status == "Playing"
+    assert app._last_payload_key is None
+    assert app._main_timeline is not None
+    assert app._translation_timeline is not None
+
+
 def verify_system_resume_command_recovers_provider() -> None:
     app = object.__new__(TaskbarLyricsApp)
     app.provider = FakeRecoverProvider()
@@ -296,6 +347,7 @@ def run_static_verification() -> None:
     verify_resume_freeze_does_not_jump_progress()
     verify_provider_recovery_rebuilds_watchers()
     verify_control_fails_closed()
+    verify_play_pause_control_does_not_optimistically_flip_state()
     verify_system_resume_command_recovers_provider()
 
 

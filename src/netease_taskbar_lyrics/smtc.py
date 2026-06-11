@@ -346,9 +346,10 @@ class MediaSessionProvider:
         if track is None:
             track = self._window_probe.get_current_track()
 
-        title = track.title if track else remote_state.title
-        artist = track.artist if track else remote_state.artist
-        duration_ms = track.duration_ms if track and track.duration_ms > 0 else remote_state.duration_ms
+        use_window_track = track is not None and self._window_track_matches_remote(track, remote_state)
+        title = track.title if use_window_track else remote_state.title
+        artist = track.artist if use_window_track else remote_state.artist
+        duration_ms = track.duration_ms if use_window_track and track.duration_ms > 0 else remote_state.duration_ms
         song_id = remote_state.song_id or (track.song_id if track else 0)
         if not title.strip() and song_id <= 0:
             return None
@@ -382,6 +383,19 @@ class MediaSessionProvider:
     def _source_looks_like_netease(session: MediaSessionSnapshot) -> bool:
         source = session.source_app_user_model_id.lower()
         return any(keyword in source for keyword in NETEASE_KEYWORDS)
+
+    @staticmethod
+    def _window_track_matches_remote(track, remote_state) -> bool:
+        remote_title = str(remote_state.title or "").strip().lower()
+        track_title = str(track.title or "").strip().lower()
+
+        if not remote_title:
+            return True
+        if remote_state.song_id > 0 and track.song_id > 0:
+            return remote_state.song_id == track.song_id
+        if not track_title:
+            return False
+        return remote_title == track_title
 
     def _get_window_fallback_session(self) -> MediaSessionSnapshot | None:
         track = self._window_probe.get_current_track()

@@ -1,0 +1,40 @@
+{
+  "C_Cpp.default.compilerPath": "D:\\msys64\\ucrt64\\bin\\g++.exe",
+  "C_Cpp.default.cppStandard": "c++23",
+  "C_Cpp.default.intelliSenseMode": "windows-gcc-x64",
+  "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+  "C_Cpp.default.compileCommands": "${workspaceFolder}\\build\\compile_commands.json",
+  "cmake.generator": "MinGW Makefiles",
+  "cmake.buildDirectory": "${workspaceFolder}\\build",
+  "cmake.configureSettings": {
+    "CMAKE_BUILD_TYPE": "Debug",
+    "CMAKE_CXX_COMPILER": "D:/msys64/ucrt64/bin/g++.exe",
+    "CMAKE_CXX_STANDARD": "23",
+    "CMAKE_CXX_STANDARD_REQUIRED": "ON",
+    "CMAKE_CXX_EXTENSIONS": "OFF",
+    "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+    "CMAKE_MAKE_PROGRAM": "D:/msys64/ucrt64/bin/mingw32-make.exe"
+  },
+  "cmake.configureEnvironment": {
+    "PATH": "D:\\msys64\\ucrt64\\bin;${env:PATH}"
+  },
+  "cmake.buildEnvironment": {
+    "PATH": "D:\\msys64\\ucrt64\\bin;${env:PATH}"
+  },
+  "files.watcherExclude": {
+    "**/build/**": true,
+    "**/dist/**": true,
+    "**/__pycache__/**": true,
+    "**/*.pyc": true,
+    "**/logs/**": true,
+    "**/state/**": true
+  },
+  "search.exclude": {
+    "**/build/**": true,
+    "**/dist/**": true,
+    "**/__pycache__/**": true,
+    "**/*.pyc": true,
+    "**/logs/**": true,
+    "**/state/**": true
+  }
+}

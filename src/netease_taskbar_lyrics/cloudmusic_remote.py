@@ -133,9 +133,18 @@ class CloudMusicRemoteBridge:
         if normalized == "pause" and state.playback_status in {"Paused", "Stopped"}:
             return True
 
+        before_status = state.playback_status
         if normalized in {"play", "pause", "toggle-play-pause", "next", "previous"} and self._click_player_control(normalized):
-            time.sleep(0.25)
+            time.sleep(0.35)
             self._apply_player_snapshot()
+            with self._lock:
+                after_status = self._state.playback_status
+            if normalized == "play":
+                return after_status == "Playing"
+            if normalized == "pause":
+                return after_status in {"Paused", "Stopped"}
+            if normalized == "toggle-play-pause" and before_status in {"Playing", "Paused", "Stopped"}:
+                return after_status != before_status
             return True
 
         if normalized in {"play", "toggle-play-pause"} and self._restore_last_play_track():

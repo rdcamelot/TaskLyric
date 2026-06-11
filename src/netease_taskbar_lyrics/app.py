@@ -265,20 +265,35 @@ class TaskbarLyricsApp:
             if ok:
                 self._apply_control_hint(action)
 
+    def _schedule_control_refresh(self, action: str) -> None:
+        thread = threading.Thread(target=self._control_refresh_worker, args=(action,), daemon=True)
+        thread.start()
+
+    def _control_refresh_worker(self, action: str) -> None:
+        for delay_seconds in (0.25, 0.8):
+            if self._stop_event.wait(delay_seconds):
+                return
+            try:
+                session = self.provider.get_current_session()
+            except Exception as exc:
+                self.bridge.emit_event(
+                    "tasklyric.live.control_refresh_error",
+                    {"action": action, "message": str(exc)},
+                )
+                continue
+            self._session_queue.put(session)
+
     def _apply_control_hint(self, action: str) -> None:
         session = self._active_session
         if session is None:
             return
 
-        progress_ms = session.estimated_position_ms()
-        now = time.monotonic()
-        if action == "pause":
-            self._active_session = replace(session, playback_status="Paused", position_ms=progress_ms, fetched_at=now)
+        if action in {"pause", "play", "toggle-play-pause"}:
+            # Do not mirror a local play/pause state optimistically. The remote
+            # click can be delayed or ignored by NetEase, and a local hint would
+            # make TaskLyric briefly show the opposite of the real player state.
             self._last_payload_key = None
-            return
-        if action == "play":
-            self._active_session = replace(session, playback_status="Playing", position_ms=progress_ms, fetched_at=now)
-            self._last_payload_key = None
+            self._schedule_control_refresh(action)
             return
         if action in {"next", "previous"}:
             self._pending_track_key = self._active_track_key
@@ -286,6 +301,7 @@ class TaskbarLyricsApp:
             self._translation_timeline = None
             self._resolved_song_id = 0
             self._last_payload_key = None
+            self._schedule_control_refresh(action)
 
     def _start_lyric_fetch(self, session: MediaSessionSnapshot) -> None:
         thread = threading.Thread(

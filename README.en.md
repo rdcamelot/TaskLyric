@@ -32,7 +32,8 @@ TaskLyric is not currently installed into a system-wide application directory. T
 That means:
 
 - If you pulled newer code while an old `pythonw.exe` instance is still running, stop and restart TaskLyric.
-- If you rebuilt the native components, make sure the shortcuts point to the current `build\launcher\tasklyric_launcher.exe` or an equivalent fresh artifact.
+- The Startup watcher now points to `pythonw.exe launcher.pyw` by default. It does not depend on `build\launcher\tasklyric_launcher.exe`, so it survives CMake build-directory cleanup.
+- If you rebuild the native host, make sure `build\host\tasklyric_host.dll` exists. Otherwise the TaskLyric main process will fail to start.
 - If NetEase Cloud Music was updated and sync breaks again, rerun the install command so the pinned taskbar shortcut starts Cloud Music with `--remote-debugging-port=9222`.
 
 Stop the current TaskLyric instance manually:
@@ -57,6 +58,12 @@ Build the native host and launcher:
 ```powershell
 cmake -S . -B build -G "MinGW Makefiles"
 cmake --build build
+```
+
+If you use MSYS2 / MinGW, make sure the UCRT toolchain is on `PATH` before building:
+
+```powershell
+$env:PATH = "D:\msys64\ucrt64\bin;$env:PATH"
 ```
 
 Build the Windows media-session helper:
@@ -84,11 +91,36 @@ This does two things:
 - Creates `TaskLyric Background.lnk` in the Windows Startup folder. It keeps a lightweight watcher running and starts TaskLyric when NetEase Cloud Music starts.
 - Updates the pinned NetEase Cloud Music taskbar shortcut so clicking the original taskbar icon starts Cloud Music with `--remote-debugging-port=9222`.
 
+The Startup shortcut takes effect on the next Windows login. To start the watcher immediately in the current session, run:
+
+```powershell
+pythonw launcher.pyw --remote-debug-port 9222
+```
+
 The default install does not force-restart an already running NetEase process. If you explicitly want the watcher to restart a NetEase process that was launched without the remote-debug argument, add `-RestartCloudMusicWithDebug`.
 
 Note: `-TaskbarPinned` alone does not start TaskLyric. It only fixes the pinned NetEase shortcut arguments. To make TaskLyric follow the taskbar NetEase icon, use it together with `-Startup`.
 
 If no pinned NetEase taskbar shortcut is found, pin NetEase Cloud Music to the taskbar first, then rerun the install command.
+
+## Reinstall / Repair
+
+If TaskLyric does not auto-start after updating the code, upgrading NetEase Cloud Music, or cleaning the build directory, repair it with:
+
+```powershell
+python launcher.pyw --stop
+$env:PATH = "D:\msys64\ucrt64\bin;$env:PATH"
+cmake -S . -B build -G "MinGW Makefiles"
+cmake --build build --target tasklyric_host
+powershell -ExecutionPolicy Bypass -File scripts\install_tasklyric_shortcut.ps1 -Startup -TaskbarPinned
+pythonw launcher.pyw --remote-debug-port 9222
+```
+
+If the current NetEase process was not started in remote-debug mode, restart it with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\launch_cloudmusic_with_debug.ps1 -Port 9222 -RestartExisting
+```
 
 ## Optional Install
 

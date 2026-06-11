@@ -15,18 +15,20 @@ $launcherExeCandidates = @(
     (Join-Path $root 'dist\tasklyric_launcher.exe')
 )
 $launcherExe = $launcherExeCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+$pythonw = Get-Command pythonw.exe -ErrorAction SilentlyContinue
+
+if (-not (Test-Path $launcher)) {
+    throw "launcher.pyw not found: $launcher"
+}
+
+if (-not $pythonw -and -not $launcherExe) {
+    throw 'pythonw.exe was not found in PATH and no built tasklyric_launcher.exe exists.'
+}
 
 if ($launcherExe) {
     $targetPath = $launcherExe
     $baseArguments = @('--remote-debug-port', $Port)
 } else {
-    if (-not (Test-Path $launcher)) {
-        throw "launcher.pyw not found: $launcher"
-    }
-    $pythonw = Get-Command pythonw.exe -ErrorAction SilentlyContinue
-    if (-not $pythonw) {
-        throw 'pythonw.exe was not found in PATH.'
-    }
     $targetPath = $pythonw.Source
     $baseArguments = @('"' + $launcher + '"', '--remote-debug-port', $Port)
 }
@@ -124,7 +126,15 @@ foreach ($target in $targets) {
     }
 
     if ($target -eq [Environment]::GetFolderPath('Startup')) {
-        $arguments = @($baseArguments)
+        if ($pythonw) {
+            # Startup must survive rebuild/cleanup of the CMake build directory.
+            # pythonw keeps the watcher terminal-free without depending on a generated exe.
+            $shortcutTargetPath = $pythonw.Source
+            $arguments = @('"' + $launcher + '"', '--remote-debug-port', $Port)
+        } else {
+            $shortcutTargetPath = $targetPath
+            $arguments = @($baseArguments)
+        }
         if ($LaunchCloudMusic) {
             $arguments += '--launch-cloudmusic'
         }
@@ -134,6 +144,7 @@ foreach ($target in $targets) {
         $linkName = 'TaskLyric Background.lnk'
         $description = 'Watch Cloud Music and keep TaskLyric attached to a remote-debug-enabled player instance.'
     } else {
+        $shortcutTargetPath = $targetPath
         $arguments = @($baseArguments)
         $arguments += '--launch-cloudmusic'
         $arguments += '--restart-cloudmusic-with-debug'
@@ -142,7 +153,7 @@ foreach ($target in $targets) {
     }
 
     $linkPath = Join-Path $target $linkName
-    Set-Shortcut -LinkPath $linkPath -TargetPath $targetPath -Arguments $arguments -WorkingDirectory $root -IconLocation $iconLocation -Description $description
+    Set-Shortcut -LinkPath $linkPath -TargetPath $shortcutTargetPath -Arguments $arguments -WorkingDirectory $root -IconLocation $iconLocation -Description $description
     Write-Host "Created shortcut: $linkPath"
 }
 

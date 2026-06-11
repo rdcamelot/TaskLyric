@@ -32,7 +32,8 @@ TaskLyric 目前不是传统意义上的“安装到系统目录”的软件。�
 因此：
 
 - 如果你已经拉取了最新代码，但后台旧的 `pythonw.exe` 还在运行，需要先停止再重新启动。
-- 如果你重新构建了 native 部分，需要确认快捷方式指向的是当前仓库下的 `build\launcher\tasklyric_launcher.exe` 或同等新产物。
+- 启动项 watcher 默认指向 `pythonw.exe launcher.pyw`，不依赖 `build\launcher\tasklyric_launcher.exe`，所以清理 build 目录后仍然能随 Windows 登录启动。
+- 如果你重新构建了 native host，需要确认 `build\host\tasklyric_host.dll` 存在，否则 TaskLyric 主进程会启动失败。
 - 如果网易云更新后又出现状态不同步，优先重新执行“安装 / 修复快捷方式”命令，让任务栏网易云重新带 `--remote-debugging-port=9222` 启动。
 
 手动停止当前 TaskLyric：
@@ -57,6 +58,12 @@ python launcher.pyw --stop
 ```powershell
 cmake -S . -B build -G "MinGW Makefiles"
 cmake --build build
+```
+
+如果使用 MSYS2 / MinGW，构建前建议确保 UCRT 工具链在 `PATH` 中：
+
+```powershell
+$env:PATH = "D:\msys64\ucrt64\bin;$env:PATH"
 ```
 
 构建 Windows media-session helper：
@@ -84,11 +91,36 @@ powershell -ExecutionPolicy Bypass -File scripts\install_tasklyric_shortcut.ps1 
 - 创建 `TaskLyric Background.lnk` 到 Windows 启动项，登录后后台常驻，网易云打开时自动启动 TaskLyric。
 - 修改已固定到任务栏的网易云音乐快捷方式，让你点击原来的网易云图标时，以 `--remote-debugging-port=9222` 启动网易云。
 
+启动项会在下次 Windows 登录后自动生效。如果你想在当前会话立即启动后台 watcher，可以额外运行：
+
+```powershell
+pythonw launcher.pyw --remote-debug-port 9222
+```
+
 默认安装不会强制重启已经打开的网易云。如果你明确希望 watcher 自动把“未带 remote-debug 参数”的网易云重启为正确模式，可以额外加 `-RestartCloudMusicWithDebug`。
 
 注意：`-TaskbarPinned` 不会单独启动 TaskLyric，它只修复任务栏网易云的启动参数。想实现“点击任务栏网易云后自动有任务栏歌词”，需要配合 `-Startup` 的后台 watcher。
 
 如果脚本提示找不到已固定的网易云任务栏快捷方式，请先把网易云音乐固定到任务栏，再重新执行上面的安装命令。
+
+## 重新安装 / 修复
+
+如果更新代码、网易云升级、或清理过 build 目录后 TaskLyric 没有自动启动，按下面流程修复：
+
+```powershell
+python launcher.pyw --stop
+$env:PATH = "D:\msys64\ucrt64\bin;$env:PATH"
+cmake -S . -B build -G "MinGW Makefiles"
+cmake --build build --target tasklyric_host
+powershell -ExecutionPolicy Bypass -File scripts\install_tasklyric_shortcut.ps1 -Startup -TaskbarPinned
+pythonw launcher.pyw --remote-debug-port 9222
+```
+
+如果当前网易云不是以 remote-debug 模式启动，再执行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\launch_cloudmusic_with_debug.ps1 -Port 9222 -RestartExisting
+```
 
 ## 可选安装方式
 

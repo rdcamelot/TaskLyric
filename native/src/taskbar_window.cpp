@@ -1087,14 +1087,9 @@ void TaskbarWindow::queue_control_locked(TaskbarControlAction action) {
         return;
     }
 
-    if (action == TaskbarControlAction::toggle_playback) {
-        if (_wcsicmp(lyric_state_.playback_state.c_str(), L"playing") == 0) {
-            command = L"pause";
-        } else if (_wcsicmp(lyric_state_.playback_state.c_str(), L"paused") == 0) {
-            command = L"play";
-        }
-    }
-
+    // Keep the center button as a real toggle. The Python/remote side reads
+    // NetEase's current state before acting; deriving play/pause from this
+    // mirrored UI state can be stale after video playback or system resume.
     pending_command_queue_.push_back(std::wstring(L"{\"action\":\"") + std::wstring(command) + L"\",\"source\":\"taskbar-control\"}");
     append_debug_line((std::wstring(L"control queued: ") + std::wstring(command)).c_str());
     if (hwnd_) {
