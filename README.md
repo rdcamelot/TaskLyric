@@ -240,6 +240,7 @@ remote-debug 路径最关键，因为当前网易云桌面版的 Chromium render
 - `logs\tasklyric-host.log`
 - `logs\tasklyric-launcher.log`
 - `logs\tasklyric-window.log`
+- `state\launcher-state.json`
 - `state\last-event.json`
 - `state\last-native-update.json`
 
@@ -247,6 +248,7 @@ remote-debug 路径最关键，因为当前网易云桌面版的 Chromium render
 
 - 网易云进程是否带有 `--remote-debugging-port=9222`
 - `http://127.0.0.1:9222/json/list` 是否能访问
+- `python scripts\verify_media_logic.py --live` 是否显示 `cloudMusicReporterProcessIds` 有值但 `cloudMusicProcessIds` 为空；这通常表示网易云主进程已退出或崩溃，只剩崩溃上报进程，TaskLyric 无法继续精确同步
 - 是否存在旧的 `pythonw.exe` TaskLyric 进程
 - 是否重新执行过推荐安装命令
 

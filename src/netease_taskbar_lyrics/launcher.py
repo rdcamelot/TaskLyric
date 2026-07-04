@@ -19,9 +19,12 @@ DEFAULT_POLL_INTERVAL_SECONDS = 1.0
 SHORTCUT_REPAIR_INTERVAL_SECONDS = 300.0
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 _WINDOW_PROBE = CloudMusicWindowProbe()
+STATE_DIR = ROOT / "state"
+LAUNCHER_STATE_PATH = STATE_DIR / "launcher-state.json"
 
 
 def _stop_tasklyric_python_processes(*, include_launcher: bool = True) -> bool:
+    stopped = _stop_tasklyric_state_processes(include_launcher=include_launcher)
     predicates = ["$_.CommandLine -like '*TaskLyric__efb8867*main.py*'", "$_.CommandLine -like '*TaskLyric*main.py*'"]
     if include_launcher:
         predicates.extend(["$_.CommandLine -like '*TaskLyric__efb8867*launcher.pyw*'", "$_.CommandLine -like '*TaskLyric*launcher.pyw*'"])
@@ -38,24 +41,51 @@ def _stop_tasklyric_python_processes(*, include_launcher: bool = True) -> bool:
         pids = [payload]
     elif isinstance(payload, list):
         pids = [int(value) for value in payload if isinstance(value, (int, float))]
-    stopped = False
     current_pid = os.getpid()
     for pid in pids:
         if pid > 0 and pid != current_pid:
-            try:
-                subprocess.run(
-                    ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", f"Stop-Process -Id {pid} -Force -ErrorAction SilentlyContinue"],
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=8,
-                    creationflags=CREATE_NO_WINDOW,
-                )
-                stopped = True
-            except (OSError, subprocess.SubprocessError):
-                continue
+            stopped = _stop_pid(pid) or stopped
     return stopped
+
+
+def _stop_tasklyric_state_processes(*, include_launcher: bool) -> bool:
+    try:
+        payload = json.loads(LAUNCHER_STATE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+
+    candidate_pids = [payload.get("taskLyricPid")]
+    if include_launcher:
+        candidate_pids.append(payload.get("launcherPid"))
+
+    stopped = False
+    current_pid = os.getpid()
+    for value in candidate_pids:
+        if not isinstance(value, (int, float)):
+            continue
+        pid = int(value)
+        if pid <= 0 or pid == current_pid:
+            continue
+        stopped = _stop_pid(pid) or stopped
+    return stopped
+
+
+def _stop_pid(pid: int) -> bool:
+    try:
+        completed = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", f"Stop-Process -Id {int(pid)} -Force -ErrorAction SilentlyContinue"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=8,
+            creationflags=CREATE_NO_WINDOW,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return completed.returncode == 0
 
 
 def _powershell_json(command: str):
@@ -82,7 +112,41 @@ def _powershell_json(command: str):
 
 
 def cloudmusic_process_ids() -> list[int]:
-    payload = _powershell_json("Get-Process -Name cloudmusic -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id | ConvertTo-Json -Compress")
+    payload = _powershell_json(
+        r"""
+$ids = @()
+foreach ($process in Get-Process -ErrorAction SilentlyContinue) {
+    $name = [string]$process.ProcessName
+    if ($name -ieq 'cloudmusic') {
+        $ids += [int]$process.Id
+        continue
+    }
+
+    $path = ''
+    try {
+        $path = [string]$process.Path
+    } catch {
+        $path = ''
+    }
+
+    if ($path -match '(?i)\\CloudMusic\\' -and $name -notmatch '(?i)reporter|minidump|crash') {
+        $ids += [int]$process.Id
+    }
+}
+$ids | Sort-Object -Unique | ConvertTo-Json -Compress
+"""
+    )
+    if payload is None:
+        return []
+    if isinstance(payload, int):
+        return [payload]
+    if isinstance(payload, list):
+        return [int(value) for value in payload if isinstance(value, (int, float))]
+    return []
+
+
+def cloudmusic_reporter_process_ids() -> list[int]:
+    payload = _powershell_json("Get-Process -Name cloudmusic_reporter -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id | ConvertTo-Json -Compress")
     if payload is None:
         return []
     if isinstance(payload, int):
@@ -302,6 +366,7 @@ class TaskLyricBackgroundLauncher:
         self._last_shortcut_repair_check = 0.0
 
     def run(self) -> None:
+        self._write_state({"event": "launcher-started"})
         try:
             while True:
                 self._tick()
@@ -309,10 +374,13 @@ class TaskLyricBackgroundLauncher:
         except KeyboardInterrupt:
             pass
         finally:
+            self._write_state({"event": "launcher-stopping"})
             self._stop_tasklyric()
 
     def _tick(self) -> None:
-        process_running = is_cloudmusic_running()
+        cloudmusic_pids = cloudmusic_process_ids()
+        reporter_pids = cloudmusic_reporter_process_ids()
+        process_running = bool(cloudmusic_pids)
         remote_debug_process = cloudmusic_has_remote_debug_port(self.remote_debug_port) if process_running else False
         remote_ready = remote_debug_available(self.remote_debug_port)
         window_ready = has_cloudmusic_window()
@@ -320,7 +388,10 @@ class TaskLyricBackgroundLauncher:
         self._repair_cloudmusic_shortcuts_if_due(now)
         if remote_debug_process and not remote_ready:
             self._startup_grace_until = max(self._startup_grace_until, now + 30.0)
-        running = process_running and (remote_ready or window_ready or now < self._startup_grace_until)
+        # NetEase updates may change process visibility during early startup.
+        # If the remote-debug endpoint is reachable, it is the strongest signal
+        # and should keep TaskLyric running even if process-name probing fails.
+        running = remote_ready or (process_running and (window_ready or now < self._startup_grace_until or remote_debug_process))
 
         if self.launch_cloudmusic and not process_running and not self._launched_cloudmusic:
             if launch_cloudmusic_with_debug(self.remote_debug_port):
@@ -354,6 +425,24 @@ class TaskLyricBackgroundLauncher:
             self._startup_grace_until = 0.0
             self._remote_missing_since = 0.0
             self._stop_tasklyric()
+
+        self._write_state(
+            {
+                "event": "tick",
+                "cloudMusicProcessIds": cloudmusic_pids,
+                "cloudMusicReporterProcessIds": reporter_pids,
+                "cloudMusicRunning": process_running,
+                "cloudMusicReporterOnly": bool(reporter_pids and not cloudmusic_pids),
+                "remoteDebugProcess": remote_debug_process,
+                "remoteDebugAvailable": remote_ready,
+                "windowReady": window_ready,
+                "taskLyricRunning": self._tasklyric_process is not None and self._tasklyric_process.poll() is None,
+                "taskLyricPid": self._tasklyric_process.pid if self._tasklyric_process is not None and self._tasklyric_process.poll() is None else 0,
+                "launchCloudMusic": self.launch_cloudmusic,
+                "restartWithDebug": self.restart_with_debug,
+                "remoteMissingSeconds": max(0.0, now - self._remote_missing_since) if self._remote_missing_since > 0 else 0.0,
+            }
+        )
 
     def _repair_cloudmusic_shortcuts_if_due(self, now: float) -> None:
         if self._last_shortcut_repair_check > 0 and now - self._last_shortcut_repair_check < SHORTCUT_REPAIR_INTERVAL_SECONDS:
@@ -390,6 +479,19 @@ class TaskLyricBackgroundLauncher:
             except subprocess.TimeoutExpired:
                 process.kill()
         self._tasklyric_process = None
+
+    def _write_state(self, payload: dict[str, object]) -> None:
+        data = {
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "remoteDebugPort": self.remote_debug_port,
+            "launcherPid": os.getpid(),
+        }
+        data.update(payload)
+        try:
+            STATE_DIR.mkdir(parents=True, exist_ok=True)
+            LAUNCHER_STATE_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        except OSError:
+            return
 
 
 def run(argv: Iterable[str] | None = None) -> None:

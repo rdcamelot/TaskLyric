@@ -240,6 +240,7 @@ Useful files:
 - `logs\tasklyric-host.log`
 - `logs\tasklyric-launcher.log`
 - `logs\tasklyric-window.log`
+- `state\launcher-state.json`
 - `state\last-event.json`
 - `state\last-native-update.json`
 
@@ -247,6 +248,7 @@ If sync breaks after a NetEase update, check:
 
 - Whether `cloudmusic.exe` was started with `--remote-debugging-port=9222`
 - Whether `http://127.0.0.1:9222/json/list` is reachable
+- Whether `python scripts\verify_media_logic.py --live` reports non-empty `cloudMusicReporterProcessIds` but empty `cloudMusicProcessIds`; this usually means the NetEase main process has exited or crashed and only the crash reporter remains, so TaskLyric cannot perform exact sync
 - Whether an old TaskLyric `pythonw.exe` process is still running
 - Whether the recommended install command has been rerun
 

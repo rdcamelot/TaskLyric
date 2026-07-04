@@ -20,6 +20,7 @@ SYSTEM_RESUME_GAP_SECONDS = 8.0
 WAITING_TEXT = "等待网易云音乐开始播放"
 LOADING_PREFIX = "正在加载歌词"
 STOPPED_SUBTEXT = "TaskLyric"
+WINDOW_FALLBACK_SUBTEXT = "等待精确同步"
 
 
 @dataclass(frozen=True)
@@ -351,16 +352,20 @@ class TaskbarLyricsApp:
 
         main_text = title or WAITING_TEXT
         sub_text = artist or STOPPED_SUBTEXT
+        exact_sync_available = session.detection_source != "window"
 
-        if self._main_timeline:
+        if exact_sync_available and self._main_timeline:
             current_line = self._main_timeline.line_at(progress_ms)
             if current_line:
                 main_text = current_line
 
-        if self.show_translation and self._translation_timeline:
+        if exact_sync_available and self.show_translation and self._translation_timeline:
             translated_line = self._translation_timeline.line_at(progress_ms)
             if translated_line:
                 sub_text = translated_line
+
+        if not exact_sync_available:
+            sub_text = artist or WINDOW_FALLBACK_SUBTEXT
 
         if self._pending_track_key:
             main_text = f"{LOADING_PREFIX}: {title}" if title else LOADING_PREFIX

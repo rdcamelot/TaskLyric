@@ -25,6 +25,7 @@ from src.netease_taskbar_lyrics.cloudmusic_remote import (  # noqa: E402
 from src.netease_taskbar_lyrics.launcher import (  # noqa: E402
     cloudmusic_has_remote_debug_port,
     cloudmusic_process_ids,
+    cloudmusic_reporter_process_ids,
     remote_debug_available,
     repair_pinned_cloudmusic_shortcuts,
 )
@@ -458,15 +459,26 @@ def live_diagnostics(port: int, probe_timeout: float = 3.0) -> dict[str, object]
     window_probe = CloudMusicWindowProbe()
     return {
         "cloudMusicProcessIds": cloudmusic_process_ids(),
+        "cloudMusicReporterProcessIds": cloudmusic_reporter_process_ids(),
         "cloudMusicHasRemoteDebugArg": cloudmusic_has_remote_debug_port(port),
         "remoteDebugAvailable": remote_debug_available(port),
         "remoteTargets": remote_target_diagnostics(port),
         "remoteState": read_remote_state(port, timeout_seconds=probe_timeout),
         "windowTrack": window_track_to_dict(window_probe.get_current_track()),
+        "launcherState": read_launcher_state(),
         "shortcutRepair": repair_pinned_cloudmusic_shortcuts(port),
         "rawSmtcSessions": raw_smtc_sessions,
         "selectedSession": selected_session,
     }
+
+
+def read_launcher_state() -> dict[str, object] | None:
+    path = ROOT / "state" / "launcher-state.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 def watch_live_diagnostics(port: int, seconds: float, interval: float, probe_timeout: float) -> None:
