@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass, replace
+from pathlib import Path
 import queue
 import threading
 import time
@@ -37,6 +38,7 @@ class TaskbarLyricsApp:
         poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS,
         tick_interval_ms: int = DEFAULT_TICK_INTERVAL_MS,
         remote_debug_port: int | None = 9222,
+        stop_file: Path | None = None,
     ) -> None:
         self.provider = MediaSessionProvider(remote_debug_port=remote_debug_port)
         self.lyric_client = NeteaseLyricClient()
@@ -46,6 +48,7 @@ class TaskbarLyricsApp:
         self.tick_interval_ms = max(60, int(tick_interval_ms))
         self.show_translation = show_translation
         self.remote_debug_port = int(remote_debug_port or 0) if remote_debug_port else 0
+        self.stop_file = stop_file
 
         self._session_queue: queue.Queue[MediaSessionSnapshot | None] = queue.Queue()
         self._lyric_queue: queue.Queue[LyricResult] = queue.Queue()
@@ -81,6 +84,9 @@ class TaskbarLyricsApp:
 
         try:
             while not self._stop_event.is_set():
+                if self.stop_file is not None and self.stop_file.exists():
+                    self._stop_event.set()
+                    break
                 self._handle_possible_system_resume()
                 self._drain_session_queue()
                 self._drain_lyric_queue()
@@ -459,6 +465,7 @@ def run(argv: list[str] | None = None) -> None:
     parser.add_argument("--poll-interval", type=float, default=DEFAULT_POLL_INTERVAL_SECONDS, help="Seconds between playback-source polls.")
     parser.add_argument("--tick-ms", type=int, default=DEFAULT_TICK_INTERVAL_MS, help="Milliseconds between host updates.")
     parser.add_argument("--remote-debug-port", type=int, default=9222, help="Chromium remote debugging port for exact NetEase playback events. Set 0 to disable.")
+    parser.add_argument("--stop-file", type=Path, default=None, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
 
     app = TaskbarLyricsApp(
@@ -466,6 +473,7 @@ def run(argv: list[str] | None = None) -> None:
         poll_interval_seconds=args.poll_interval,
         tick_interval_ms=args.tick_ms,
         remote_debug_port=args.remote_debug_port,
+        stop_file=args.stop_file,
     )
     try:
         app.start()

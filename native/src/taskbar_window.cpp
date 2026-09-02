@@ -510,10 +510,13 @@ LRESULT CALLBACK TaskbarWindow::window_proc(HWND hwnd, UINT message, WPARAM wpar
     }
     case WM_SIZE: {
         std::scoped_lock lock(self->mutex_);
-        self->window_width_ = static_cast<UINT>(LOWORD(lparam));
-        self->window_height_ = static_cast<UINT>(HIWORD(lparam));
-        if (self->renderer_ && self->composition_ready_ && self->window_width_ > 0 && self->window_height_ > 0) {
-            self->renderer_->resize(self->window_width_, self->window_height_);
+        const UINT next_width = static_cast<UINT>(LOWORD(lparam));
+        const UINT next_height = static_cast<UINT>(HIWORD(lparam));
+        const bool size_changed = next_width != self->window_width_ || next_height != self->window_height_;
+        self->window_width_ = next_width;
+        self->window_height_ = next_height;
+        if (size_changed && self->renderer_ && self->composition_ready_) {
+            self->reset_renderer_locked(L"window-size-change");
         }
         return 0;
     }
@@ -900,6 +903,7 @@ void TaskbarWindow::apply_window_rect(const RECT& screen_rect) {
     RECT current{};
     GetWindowRect(hwnd_, &current);
     const bool changed = current.left != screen_rect.left || current.top != screen_rect.top || current.right != screen_rect.right || current.bottom != screen_rect.bottom;
+    const bool size_changed = rect_width(current) != width || rect_height(current) != height;
 
     if (changed) {
         MoveWindow(hwnd_, x, y, width, height, FALSE);
@@ -911,13 +915,10 @@ void TaskbarWindow::apply_window_rect(const RECT& screen_rect) {
         std::scoped_lock lock(mutex_);
         const UINT next_width = static_cast<UINT>(width);
         const UINT next_height = static_cast<UINT>(height);
-        const bool geometry_changed = changed || next_width != window_width_ || next_height != window_height_;
         window_width_ = next_width;
         window_height_ = next_height;
-        if (geometry_changed && renderer_ && composition_ready_) {
-            reset_renderer_locked(L"snap-layout-change");
-        } else if (renderer_ && composition_ready_) {
-            renderer_->resize(window_width_, window_height_);
+        if (size_changed && renderer_ && composition_ready_) {
+            reset_renderer_locked(L"layout-size-change");
         }
     }
 

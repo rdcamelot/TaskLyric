@@ -23,6 +23,7 @@ from src.netease_taskbar_lyrics.cloudmusic_remote import (  # noqa: E402
     _normalize_snapshot_playback_state,
 )
 from src.netease_taskbar_lyrics.launcher import (  # noqa: E402
+    TaskLyricBackgroundLauncher,
     cloudmusic_has_remote_debug_port,
     cloudmusic_process_ids,
     cloudmusic_reporter_process_ids,
@@ -339,6 +340,52 @@ def verify_system_resume_command_recovers_provider() -> None:
     )
 
 
+def verify_headless_cloudmusic_process_does_not_keep_tasklyric_running() -> None:
+    now = time.monotonic()
+    # A stale cloudmusic.exe may retain the remote-debug argument after its UI
+    # exits. Once its one-time startup grace has elapsed, it is not usable.
+    assert not TaskLyricBackgroundLauncher._cloudmusic_is_usable(
+        process_running=True,
+        remote_ready=False,
+        window_ready=False,
+        startup_grace_until=now - 0.1,
+        now=now,
+    )
+    assert TaskLyricBackgroundLauncher._cloudmusic_is_usable(
+        process_running=True,
+        remote_ready=False,
+        window_ready=False,
+        startup_grace_until=now + 0.1,
+        now=now,
+    )
+    assert TaskLyricBackgroundLauncher._cloudmusic_is_usable(
+        process_running=True,
+        remote_ready=True,
+        window_ready=False,
+        startup_grace_until=now - 0.1,
+        now=now,
+    )
+
+    launcher = TaskLyricBackgroundLauncher()
+    launcher._startup_grace_until = now - 0.1
+    launcher._remote_debug_process_signature = (50132,)
+    # A temporary command-line probe failure must not make the same zombie PID
+    # eligible for another startup grace when the probe recovers.
+    launcher._observe_remote_debug_process(
+        process_ids=[50132],
+        remote_debug_process=False,
+        remote_ready=False,
+        now=now,
+    )
+    launcher._observe_remote_debug_process(
+        process_ids=[50132],
+        remote_debug_process=True,
+        remote_ready=False,
+        now=now,
+    )
+    assert launcher._startup_grace_until < now
+
+
 def run_static_verification() -> None:
     verify_playback_state_mapping()
     verify_browser_smtc_is_rejected()
@@ -350,6 +397,7 @@ def run_static_verification() -> None:
     verify_control_fails_closed()
     verify_play_pause_control_does_not_optimistically_flip_state()
     verify_system_resume_command_recovers_provider()
+    verify_headless_cloudmusic_process_does_not_keep_tasklyric_running()
 
 
 def snapshot_to_dict(session: MediaSessionSnapshot | None) -> dict[str, object] | None:

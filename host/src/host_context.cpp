@@ -180,14 +180,17 @@ int HostContext::call_native(std::wstring_view method, std::wstring_view payload
         return 21;
     }
 
+    const bool is_update = method == L"tasklyric.update";
     if (method == L"tasklyric.config") {
         write_utf8_file(config_path_, payload_json);
-    } else if (method == L"tasklyric.update") {
+    } else if (is_update) {
         write_utf8_file(last_native_update_path_, payload_json);
     }
 
     const int result = TaskbarBridge::instance().dispatch(method, payload_json);
-    log_line(L"native: " + std::wstring(method));
+    if (!is_update) {
+        log_line(L"native: " + std::wstring(method));
+    }
     rebuild_state_json();
     return result;
 }
@@ -235,6 +238,20 @@ void HostContext::rebuild_state_json() {
 }
 
 void HostContext::log_line(std::wstring_view line) {
+    constexpr std::uintmax_t kMaxLogBytes = 5ULL * 1024ULL * 1024ULL;
+    std::error_code ec;
+    const auto log_size = std::filesystem::file_size(log_path_, ec);
+    if (!ec && log_size >= kMaxLogBytes) {
+        auto backup_path = log_path_;
+        backup_path += L".1";
+        std::filesystem::remove(backup_path, ec);
+        ec.clear();
+        std::filesystem::rename(log_path_, backup_path, ec);
+        if (ec) {
+            std::ofstream truncate_stream(log_path_, std::ios::trunc | std::ios::binary);
+        }
+    }
+
     const std::wstring formatted = current_timestamp() + L" " + std::wstring(line) + L"\n";
     const std::string utf8 = wide_to_utf8(formatted);
 
