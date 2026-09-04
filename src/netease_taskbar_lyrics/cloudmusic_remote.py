@@ -310,7 +310,7 @@ class CloudMusicRemoteBridge:
                     connected=state.connected,
                     play_id=play_id or state.play_id,
                     resume_or_pause_id=state.resume_or_pause_id,
-                    song_id=song_id or state.song_id,
+                    song_id=_merge_song_id(state.play_id, state.song_id, play_id, song_id),
                     title=state.title,
                     artist=state.artist,
                     duration_ms=state.duration_ms,
@@ -348,7 +348,7 @@ class CloudMusicRemoteBridge:
                     connected=state.connected,
                     play_id=play_id or state.play_id,
                     resume_or_pause_id=state.resume_or_pause_id,
-                    song_id=song_id or state.song_id,
+                    song_id=_merge_song_id(state.play_id, state.song_id, play_id, song_id),
                     title=state.title,
                     artist=state.artist,
                     duration_ms=state.duration_ms,
@@ -373,7 +373,7 @@ class CloudMusicRemoteBridge:
                     connected=state.connected,
                     play_id=play_id or state.play_id,
                     resume_or_pause_id=resume_id or state.resume_or_pause_id,
-                    song_id=song_id or state.song_id,
+                    song_id=_merge_song_id(state.play_id, state.song_id, play_id, song_id),
                     title=state.title,
                     artist=state.artist,
                     duration_ms=state.duration_ms,
@@ -400,7 +400,7 @@ class CloudMusicRemoteBridge:
                     connected=state.connected,
                     play_id=play_id or state.play_id,
                     resume_or_pause_id=state.resume_or_pause_id,
-                    song_id=song_id or state.song_id,
+                    song_id=_merge_song_id(state.play_id, state.song_id, play_id, song_id),
                     title=state.title,
                     artist=state.artist,
                     duration_ms=state.duration_ms,
@@ -422,7 +422,7 @@ class CloudMusicRemoteBridge:
                     connected=state.connected,
                     play_id=play_id or state.play_id,
                     resume_or_pause_id=state.resume_or_pause_id,
-                    song_id=song_id or state.song_id,
+                    song_id=_merge_song_id(state.play_id, state.song_id, play_id, song_id),
                     title=state.title,
                     artist=state.artist,
                     duration_ms=state.duration_ms,
@@ -621,7 +621,8 @@ class CloudMusicRemoteBridge:
 
         with self._lock:
             state = self._state
-            same_track = not song_id or not state.song_id or song_id == state.song_id
+            track_changed = _track_identity_changed(state, play_id, song_id, title, artist)
+            same_track = not track_changed
             if playback_status == "Unknown":
                 playback_status = state.playback_status
 
@@ -646,12 +647,12 @@ class CloudMusicRemoteBridge:
 
             self._state = CloudMusicRemoteState(
                 connected=state.connected,
-                play_id=play_id or state.play_id,
+                play_id=play_id if track_changed else play_id or state.play_id,
                 resume_or_pause_id=state.resume_or_pause_id,
-                song_id=song_id or state.song_id,
-                title=title or state.title,
-                artist=artist or state.artist,
-                duration_ms=duration_ms or state.duration_ms,
+                song_id=song_id if track_changed else song_id or state.song_id,
+                title=title if track_changed else title or state.title,
+                artist=artist if track_changed else artist or state.artist,
+                duration_ms=duration_ms if track_changed else duration_ms or state.duration_ms,
                 position_ms=position_ms,
                 playback_status=playback_status,
                 fetched_at=fetched_at,
@@ -1169,6 +1170,34 @@ def _extract_song_id(raw: Any) -> int:
         if head.isdigit():
             return int(head)
     return 0
+
+
+def _merge_song_id(current_play_id: str, current_song_id: int, play_id: str, song_id: int) -> int:
+    if play_id and current_play_id and play_id != current_play_id:
+        return song_id
+    return song_id or current_song_id
+
+
+def _track_identity_changed(
+    state: CloudMusicRemoteState,
+    play_id: str,
+    song_id: int,
+    title: str,
+    artist: str,
+) -> bool:
+    if play_id and state.play_id:
+        return play_id != state.play_id
+    if song_id > 0 and state.song_id > 0:
+        return song_id != state.song_id
+
+    normalized_title = title.strip().casefold()
+    current_title = state.title.strip().casefold()
+    if normalized_title and current_title and normalized_title != current_title:
+        return True
+
+    normalized_artist = artist.strip().casefold()
+    current_artist = state.artist.strip().casefold()
+    return bool(normalized_artist and current_artist and normalized_artist != current_artist)
 
 
 def _extract_seek_position_ms(values: list[Any]) -> int:

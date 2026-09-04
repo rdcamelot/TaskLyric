@@ -49,12 +49,13 @@ def snapshot(source: str, title: str = "Browser Video", artist: str = "Web", sta
 
 
 class FakeRemote:
-    def __init__(self, *, has_target: bool = False, control_ok: bool = False) -> None:
+    def __init__(self, *, has_target: bool = False, control_ok: bool = False, state: CloudMusicRemoteState | None = None) -> None:
         self.has_target_value = has_target
         self.control_ok = control_ok
+        self.state = state
 
     def get_state(self):
-        return None
+        return self.state
 
     def has_target(self) -> bool:
         return self.has_target_value
@@ -214,6 +215,65 @@ def verify_window_fallback_does_not_autoplay() -> None:
     assert first.estimated_position_ms() == 0
     assert second.estimated_position_ms() == 0
     instance.shutdown()
+
+
+def verify_local_cached_track_clears_stale_online_identity() -> None:
+    bridge = object.__new__(CloudMusicRemoteBridge)
+    bridge._lock = threading.Lock()
+    bridge._state = CloudMusicRemoteState(
+        connected=True,
+        play_id="1939837729_online",
+        song_id=1939837729,
+        title="Previous Song",
+        artist="Previous Artist",
+        duration_ms=231000,
+        position_ms=162000,
+        playback_status="Playing",
+        fetched_at=time.monotonic() - 1,
+    )
+    bridge._call_cdp = lambda method, params, timeout: {
+        "result": {
+            "result": {
+                "value": {
+                    "ok": True,
+                    "songId": 0,
+                    "title": "Local Track",
+                    "artist": "Local Artist",
+                    "playId": "LOCAL_CACHE_HASH",
+                    "positionMs": 5000,
+                    "durationMs": 180000,
+                    "playbackStatus": 2,
+                }
+            }
+        }
+    }
+
+    assert bridge._apply_player_snapshot() is True
+    state = bridge._state
+    assert state.play_id == "LOCAL_CACHE_HASH"
+    assert state.song_id == 0
+    assert state.title == "Local Track"
+    assert state.artist == "Local Artist"
+    assert state.position_ms == 5000
+
+    provider_instance = provider()
+    provider_instance._remote = FakeRemote(
+        state=CloudMusicRemoteState(
+            connected=True,
+            play_id="LOCAL_CACHE_HASH",
+            song_id=0,
+            title="Song",
+            artist="Artist",
+            duration_ms=180000,
+            playback_status="Playing",
+            fetched_at=time.monotonic(),
+        )
+    )
+    provider_instance._window_probe = FakeWindowWithTrack()
+    session = provider_instance.get_current_session()
+    assert session is not None
+    assert session.song_id == 0
+    provider_instance.shutdown()
 
 
 def verify_resume_freeze_does_not_jump_progress() -> None:
@@ -392,6 +452,7 @@ def run_static_verification() -> None:
     verify_stale_helper_browser_session_is_rejected()
     verify_explicit_netease_session_is_accepted()
     verify_window_fallback_does_not_autoplay()
+    verify_local_cached_track_clears_stale_online_identity()
     verify_resume_freeze_does_not_jump_progress()
     verify_provider_recovery_rebuilds_watchers()
     verify_control_fails_closed()

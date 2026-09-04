@@ -350,7 +350,11 @@ class MediaSessionProvider:
         title = track.title if use_window_track else remote_state.title
         artist = track.artist if use_window_track else remote_state.artist
         duration_ms = track.duration_ms if use_window_track and track.duration_ms > 0 else remote_state.duration_ms
-        song_id = remote_state.song_id or (track.song_id if track else 0)
+        # A non-empty play_id with song_id=0 is a valid local/cache track
+        # identity. Do not replace it with a stale online ID from playingList.
+        song_id = remote_state.song_id
+        if song_id <= 0 and not remote_state.play_id and track is not None:
+            song_id = track.song_id
         if not title.strip() and song_id <= 0:
             return None
 
