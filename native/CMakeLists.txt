@@ -29,3 +29,10 @@ target_compile_definitions(tasklyric_native
     UNICODE
     _UNICODE
 )
+
+option(TASKLYRIC_BUILD_MATERIAL_PREVIEW "Build the standalone material preview (no player or taskbar access)" OFF)
+if(TASKLYRIC_BUILD_MATERIAL_PREVIEW)
+  add_executable(tasklyric_material_preview tools/material_preview.cpp)
+  target_link_libraries(tasklyric_material_preview PRIVATE tasklyric_native)
+  target_compile_definitions(tasklyric_material_preview PRIVATE UNICODE _UNICODE)
+endif()

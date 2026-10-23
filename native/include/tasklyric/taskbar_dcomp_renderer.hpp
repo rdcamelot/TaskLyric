@@ -33,6 +33,8 @@ private:
     void release_device_resources();
     bool rebuild_target_bitmap();
     bool ensure_visual_tree();
+    bool ensure_glass_brushes(bool light_theme);
+    void release_glass_brushes();
     void set_failure(const wchar_t* stage, HRESULT hr);
 
     HWND hwnd_ = nullptr;
@@ -56,6 +58,11 @@ private:
     IDCompositionVisual* dcomp_visual_ = nullptr;
     IDXGISwapChain1* swap_chain_ = nullptr;
     ID2D1Bitmap1* target_bitmap_ = nullptr;
+    int glass_theme_ = -1;
+    ID2D1LinearGradientBrush* glass_fill_brush_ = nullptr;
+    ID2D1LinearGradientBrush* glass_rim_brush_ = nullptr;
+    ID2D1RadialGradientBrush* glass_reflection_brush_ = nullptr;
+    ID2D1SolidColorBrush* glass_edge_brush_ = nullptr;
     std::wstring last_main_marquee_text_;
     std::wstring last_sub_marquee_text_;
     int main_marquee_anchor_progress_ms_ = 0;

@@ -162,11 +162,6 @@ struct VisualPalette {
     D2D1_COLOR_F sub_text;
     D2D1_COLOR_F shadow;
     D2D1_COLOR_F glow;
-    D2D1_COLOR_F surface_fill;
-    D2D1_COLOR_F surface_border;
-    D2D1_COLOR_F surface_inner;
-    D2D1_COLOR_F surface_top_highlight;
-    D2D1_COLOR_F surface_bottom_edge;
 };
 
 bool query_registry_dword(const wchar_t* subkey, const wchar_t* value_name, DWORD* out_value) {
@@ -207,11 +202,6 @@ VisualPalette resolve_palette(const TaskbarConfig& config) {
             to_d2d_color(config.sub_text_color, 0.88f),
             to_d2d_color(config.shadow_color, 0.62f),
             to_d2d_color(config.shadow_color, 0.22f),
-            D2D1_COLOR_F{0.0f, 0.0f, 0.0f, 0.0f},
-            D2D1_COLOR_F{0.0f, 0.0f, 0.0f, 0.0f},
-            D2D1_COLOR_F{0.0f, 0.0f, 0.0f, 0.0f},
-            D2D1_COLOR_F{0.0f, 0.0f, 0.0f, 0.0f},
-            D2D1_COLOR_F{0.0f, 0.0f, 0.0f, 0.0f},
         };
     }
 
@@ -221,11 +211,6 @@ VisualPalette resolve_palette(const TaskbarConfig& config) {
             D2D1_COLOR_F{0.32f, 0.38f, 0.46f, 0.92f},
             D2D1_COLOR_F{1.0f, 1.0f, 1.0f, 0.32f},
             D2D1_COLOR_F{1.0f, 1.0f, 1.0f, 0.10f},
-            D2D1_COLOR_F{0.985f, 0.990f, 1.000f, 0.68f},
-            D2D1_COLOR_F{0.82f, 0.86f, 0.92f, 0.62f},
-            D2D1_COLOR_F{1.0f, 1.0f, 1.0f, 0.34f},
-            D2D1_COLOR_F{1.0f, 1.0f, 1.0f, 0.48f},
-            D2D1_COLOR_F{0.72f, 0.78f, 0.86f, 0.46f},
         };
     }
 
@@ -234,16 +219,83 @@ VisualPalette resolve_palette(const TaskbarConfig& config) {
         D2D1_COLOR_F{0.78f, 0.82f, 0.88f, 0.92f},
         D2D1_COLOR_F{0.02f, 0.025f, 0.04f, 0.60f},
         D2D1_COLOR_F{0.02f, 0.025f, 0.04f, 0.18f},
-        D2D1_COLOR_F{0.96f, 0.985f, 1.0f, 0.15f},
-        D2D1_COLOR_F{1.0f, 1.0f, 1.0f, 0.20f},
-        D2D1_COLOR_F{1.0f, 1.0f, 1.0f, 0.08f},
-        D2D1_COLOR_F{1.0f, 1.0f, 1.0f, 0.21f},
-        D2D1_COLOR_F{0.03f, 0.04f, 0.065f, 0.30f},
     };
 }}  // namespace
 
 TaskbarDCompRenderer::~TaskbarDCompRenderer() {
     shutdown();
+}
+
+void TaskbarDCompRenderer::release_glass_brushes() {
+    safe_release(glass_edge_brush_);
+    safe_release(glass_reflection_brush_);
+    safe_release(glass_rim_brush_);
+    safe_release(glass_fill_brush_);
+    glass_theme_ = -1;
+}
+
+bool TaskbarDCompRenderer::ensure_glass_brushes(bool light_theme) {
+    const int theme = light_theme ? 1 : 0;
+    if (glass_theme_ == theme) {
+        return true;
+    }
+    // Cache device-bound material resources; resizing only changes brush geometry.
+    release_glass_brushes();
+    const D2D1_GRADIENT_STOP light_fill[] = {
+        {0.0f, {1.0f, 1.0f, 1.0f, 0.43f}},
+        {0.28f, {0.99f, 0.995f, 1.0f, 0.40f}},
+        {0.62f, {0.97f, 0.98f, 0.99f, 0.38f}},
+        {1.0f, {0.96f, 0.97f, 0.99f, 0.43f}},
+    };
+    const D2D1_GRADIENT_STOP dark_fill[] = {
+        {0.0f, {0.72f, 0.76f, 0.82f, 0.13f}},
+        {0.28f, {0.62f, 0.66f, 0.72f, 0.10f}},
+        {0.62f, {0.50f, 0.55f, 0.62f, 0.09f}},
+        {1.0f, {0.42f, 0.47f, 0.54f, 0.14f}},
+    };
+    const D2D1_GRADIENT_STOP rim[] = {
+        {0.0f, {1.0f, 1.0f, 1.0f, light_theme ? 0.46f : 0.26f}},
+        {0.24f, {1.0f, 1.0f, 1.0f, 0.14f}},
+        {0.54f, {0.88f, 0.92f, 0.96f, 0.055f}},
+        {0.76f, {1.0f, 1.0f, 1.0f, 0.06f}},
+        {1.0f, {1.0f, 1.0f, 1.0f, light_theme ? 0.22f : 0.15f}},
+    };
+    const D2D1_GRADIENT_STOP reflection[] = {
+        {0.0f, {1.0f, 1.0f, 1.0f, light_theme ? 0.15f : 0.075f}},
+        {0.45f, {0.97f, 0.99f, 1.0f, light_theme ? 0.05f : 0.025f}},
+        {1.0f, {0.94f, 0.98f, 1.0f, 0.0f}},
+    };
+    const auto create_linear = [&](const D2D1_GRADIENT_STOP* stops, UINT count, ID2D1LinearGradientBrush** brush) {
+        ID2D1GradientStopCollection* collection = nullptr;
+        HRESULT result = d2d_context_->CreateGradientStopCollection(stops, count, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP, &collection);
+        if (SUCCEEDED(result)) {
+            const D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES properties{{0.0f, 0.0f}, {0.0f, 1.0f}};
+            result = d2d_context_->CreateLinearGradientBrush(properties, collection, brush);
+        }
+        safe_release(collection);
+        return result;
+    };
+    HRESULT hr = create_linear(light_theme ? light_fill : dark_fill, 4, &glass_fill_brush_);
+    if (SUCCEEDED(hr)) hr = create_linear(rim, 5, &glass_rim_brush_);
+    ID2D1GradientStopCollection* collection = nullptr;
+    if (SUCCEEDED(hr)) {
+        hr = d2d_context_->CreateGradientStopCollection(reflection, 3, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP, &collection);
+    }
+    if (SUCCEEDED(hr)) {
+        const D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES properties{{0.0f, 0.0f}, {0.0f, 0.0f}, 1.0f, 1.0f};
+        hr = d2d_context_->CreateRadialGradientBrush(properties, collection, &glass_reflection_brush_);
+    }
+    safe_release(collection);
+    if (SUCCEEDED(hr)) {
+        hr = d2d_context_->CreateSolidColorBrush(D2D1_COLOR_F{0.02f, 0.04f, 0.08f, light_theme ? 0.08f : 0.13f}, &glass_edge_brush_);
+    }
+    if (FAILED(hr)) {
+        set_failure(L"CreateGlassBrushes", hr);
+        release_glass_brushes();
+        return false;
+    }
+    glass_theme_ = theme;
+    return true;
 }
 
 bool TaskbarDCompRenderer::initialize(HWND hwnd) {
@@ -464,11 +516,6 @@ bool TaskbarDCompRenderer::render(const TaskbarConfig& config, const TaskbarLyri
     ID2D1SolidColorBrush* sub_brush = nullptr;
     ID2D1SolidColorBrush* shadow_brush = nullptr;
     ID2D1SolidColorBrush* glow_brush = nullptr;
-    ID2D1SolidColorBrush* glass_fill_brush = nullptr;
-    ID2D1SolidColorBrush* glass_border_brush = nullptr;
-    ID2D1SolidColorBrush* glass_inner_brush = nullptr;
-    ID2D1SolidColorBrush* glass_highlight_brush = nullptr;
-    ID2D1SolidColorBrush* glass_bottom_edge_brush = nullptr;
     ID2D1SolidColorBrush* control_icon_brush = nullptr;
     ID2D1SolidColorBrush* control_button_brush = nullptr;
     ID2D1SolidColorBrush* control_button_hot_brush = nullptr;
@@ -490,6 +537,7 @@ bool TaskbarDCompRenderer::render(const TaskbarConfig& config, const TaskbarLyri
     const bool has_sub_text = !sub_text.empty();
     const bool is_paused = state.playback_state == L"paused";
     const bool debug_mode = config.debug_fill || config.debug_border_thickness > 0;
+    const bool glass_enabled = !debug_mode && config.theme_mode != L"manual";
     const bool light_theme = config.theme_mode == L"light" || (config.theme_mode != L"dark" && system_uses_light_theme());
     const VisualPalette palette = resolve_palette(config);
     const DWRITE_TEXT_ALIGNMENT alignment = to_text_alignment(config.align);
@@ -512,7 +560,6 @@ bool TaskbarDCompRenderer::render(const TaskbarConfig& config, const TaskbarLyri
     const D2D1_COLOR_F transparent = D2D1_COLOR_F{0.0f, 0.0f, 0.0f, 0.0f};
     const D2D1_RECT_F full_rect = {0.0f, 0.0f, width_f, height_f};
     const D2D1_ROUNDED_RECT glass_rect = {{card_inset_x, card_inset_y, width_f - card_inset_x, height_f - card_inset_y}, card_radius, card_radius};
-    const D2D1_ROUNDED_RECT glass_inner = {{glass_rect.rect.left + 1.0f, glass_rect.rect.top + 1.0f, glass_rect.rect.right - 1.0f, glass_rect.rect.bottom - 1.0f}, std::max(0.0f, card_radius - 1.0f), std::max(0.0f, card_radius - 1.0f)};
     const float text_inset_x = debug_mode ? 16.0f : (glass_rect.rect.left + 14.0f);
     const float text_right = control_layout.visible ? std::max(text_inset_x + 70.0f, static_cast<float>(control_layout.text_rect.right - 5)) : (width_f - text_inset_x);
     const float content_top = debug_mode ? 5.0f : (glass_rect.rect.top + 3.5f);
@@ -541,15 +588,11 @@ bool TaskbarDCompRenderer::render(const TaskbarConfig& config, const TaskbarLyri
     const D2D1_RECT_F main_shadow = {main_rect.left, main_rect.top + 0.8f, main_rect.right, main_rect.bottom + 0.8f};
     const D2D1_RECT_F sub_glow = {sub_rect.left, sub_rect.top + 1.0f, sub_rect.right, sub_rect.bottom + 1.0f};
     const D2D1_RECT_F sub_shadow = {sub_rect.left, sub_rect.top + 0.55f, sub_rect.right, sub_rect.bottom + 0.55f};
-    const D2D1_POINT_2F top_highlight_start = {glass_rect.rect.left + 13.0f, glass_rect.rect.top + 1.20f};
-    const D2D1_POINT_2F top_highlight_end = {glass_rect.rect.right - 13.0f, glass_rect.rect.top + 1.20f};
-    const D2D1_POINT_2F bottom_edge_start = {glass_rect.rect.left + 12.0f, glass_rect.rect.bottom - 1.05f};
-    const D2D1_POINT_2F bottom_edge_end = {glass_rect.rect.right - 12.0f, glass_rect.rect.bottom - 1.05f};
     const D2D1_COLOR_F control_icon_color = light_theme ? D2D1_COLOR_F{0.14f, 0.17f, 0.22f, 0.96f} : D2D1_COLOR_F{0.98f, 0.99f, 1.0f, 0.94f};
-    const D2D1_COLOR_F control_button_color = light_theme ? D2D1_COLOR_F{1.0f, 1.0f, 1.0f, 0.16f} : D2D1_COLOR_F{1.0f, 1.0f, 1.0f, 0.10f};
-    const D2D1_COLOR_F control_button_hot_color = light_theme ? D2D1_COLOR_F{1.0f, 1.0f, 1.0f, 0.28f} : D2D1_COLOR_F{1.0f, 1.0f, 1.0f, 0.18f};
-    const D2D1_COLOR_F control_button_pressed_color = light_theme ? D2D1_COLOR_F{0.84f, 0.88f, 0.94f, 0.40f} : D2D1_COLOR_F{1.0f, 1.0f, 1.0f, 0.26f};
-    const D2D1_COLOR_F control_button_border_color = light_theme ? D2D1_COLOR_F{0.78f, 0.82f, 0.89f, 0.50f} : D2D1_COLOR_F{1.0f, 1.0f, 1.0f, 0.18f};
+    const D2D1_COLOR_F control_button_color = {1.0f, 1.0f, 1.0f, light_theme ? 0.12f : 0.07f};
+    const D2D1_COLOR_F control_button_hot_color = {1.0f, 1.0f, 1.0f, light_theme ? 0.42f : 0.20f};
+    const D2D1_COLOR_F control_button_pressed_color = light_theme ? D2D1_COLOR_F{0.42f, 0.49f, 0.59f, 0.22f} : D2D1_COLOR_F{1.0f, 1.0f, 1.0f, 0.29f};
+    const D2D1_COLOR_F control_button_border_color = light_theme ? D2D1_COLOR_F{0.30f, 0.36f, 0.45f, 0.20f} : D2D1_COLOR_F{1.0f, 1.0f, 1.0f, 0.24f};
 
     do {
         hr = dwrite_factory_->CreateTextFormat(
@@ -636,32 +679,8 @@ bool TaskbarDCompRenderer::render(const TaskbarConfig& config, const TaskbarLyri
             set_failure(L"CreateSolidColorBrush(glow)", hr);
             break;
         }
-        if (!debug_mode) {
-            hr = d2d_context_->CreateSolidColorBrush(palette.surface_fill, &glass_fill_brush);
-            if (FAILED(hr)) {
-                set_failure(L"CreateSolidColorBrush(glassFill)", hr);
-                break;
-            }
-            hr = d2d_context_->CreateSolidColorBrush(palette.surface_border, &glass_border_brush);
-            if (FAILED(hr)) {
-                set_failure(L"CreateSolidColorBrush(glassBorder)", hr);
-                break;
-            }
-            hr = d2d_context_->CreateSolidColorBrush(palette.surface_inner, &glass_inner_brush);
-            if (FAILED(hr)) {
-                set_failure(L"CreateSolidColorBrush(glassInner)", hr);
-                break;
-            }
-            hr = d2d_context_->CreateSolidColorBrush(palette.surface_top_highlight, &glass_highlight_brush);
-            if (FAILED(hr)) {
-                set_failure(L"CreateSolidColorBrush(glassHighlight)", hr);
-                break;
-            }
-            hr = d2d_context_->CreateSolidColorBrush(palette.surface_bottom_edge, &glass_bottom_edge_brush);
-            if (FAILED(hr)) {
-                set_failure(L"CreateSolidColorBrush(glassBottomEdge)", hr);
-                break;
-            }
+        if (glass_enabled && !ensure_glass_brushes(light_theme)) {
+            break;
         }
         hr = d2d_context_->CreateSolidColorBrush(control_icon_color, &control_icon_brush);
         if (FAILED(hr)) {
@@ -764,12 +783,27 @@ bool TaskbarDCompRenderer::render(const TaskbarConfig& config, const TaskbarLyri
 
         if (fill_brush) {
             d2d_context_->FillRectangle(&full_rect, fill_brush);
-        } else if (glass_fill_brush) {
-            d2d_context_->FillRoundedRectangle(&glass_rect, glass_fill_brush);
-            d2d_context_->DrawRoundedRectangle(&glass_rect, glass_border_brush, 1.0f, nullptr);
-            d2d_context_->DrawRoundedRectangle(&glass_inner, glass_inner_brush, 1.0f, nullptr);
-            d2d_context_->DrawLine(top_highlight_start, top_highlight_end, glass_highlight_brush, 1.0f, nullptr);
-            d2d_context_->DrawLine(bottom_edge_start, bottom_edge_end, glass_bottom_edge_brush, 1.0f, nullptr);
+        } else if (glass_enabled) {
+            // Optical cues only: the child surface does not sample/refract Explorer's backdrop.
+            const auto& rect = glass_rect.rect;
+            const float span = std::max(1.0f, rect.right - rect.left);
+            const float depth = std::max(1.0f, rect.bottom - rect.top);
+            glass_fill_brush_->SetStartPoint({rect.left, rect.top});
+            glass_fill_brush_->SetEndPoint({rect.left, rect.bottom});
+            glass_rim_brush_->SetStartPoint({rect.left, rect.top});
+            glass_rim_brush_->SetEndPoint({rect.right, rect.bottom});
+            auto contact_edge = glass_rect;
+            contact_edge.rect.top += 0.45f;
+            contact_edge.rect.bottom += 0.45f;
+            d2d_context_->DrawRoundedRectangle(&contact_edge, glass_edge_brush_, 1.0f);
+            d2d_context_->FillRoundedRectangle(&glass_rect, glass_fill_brush_);
+            // One broad, quiet reflection avoids a fixed chrome-like double rim.
+            glass_reflection_brush_->SetCenter({rect.left + span * 0.40f, rect.top - depth * 0.75f});
+            glass_reflection_brush_->SetRadiusX(span * 0.95f);
+            glass_reflection_brush_->SetRadiusY(depth * 1.60f);
+            glass_reflection_brush_->SetOpacity(1.0f);
+            d2d_context_->FillRoundedRectangle(&glass_rect, glass_reflection_brush_);
+            d2d_context_->DrawRoundedRectangle(&glass_rect, glass_rim_brush_, 0.75f);
         }
 
         const auto draw_text_layout_with_motion = [&](IDWriteTextLayout* layout, const DWRITE_TEXT_METRICS& metrics, const std::wstring& text, const D2D1_RECT_F& rect, float glow_offset_y, float shadow_offset_y, ID2D1Brush* text_brush, std::wstring* last_text, int* anchor_progress_ms) {
@@ -835,7 +869,9 @@ bool TaskbarDCompRenderer::render(const TaskbarConfig& config, const TaskbarLyri
                     fill = control_button_hot_brush;
                 }
                 d2d_context_->FillRoundedRectangle(&button_rect, fill);
-                d2d_context_->DrawRoundedRectangle(&button_rect, control_button_border_brush, 1.0f, nullptr);
+                const bool active = ui_state.pressed_action == action || ui_state.hot_action == action;
+                control_button_border_brush->SetOpacity(active ? 1.0f : (action == TaskbarControlAction::toggle_playback ? 0.65f : 0.22f));
+                d2d_context_->DrawRoundedRectangle(&button_rect, control_button_border_brush, 0.8f, nullptr);
                 d2d_context_->DrawText(
                     glyph,
                     1,
@@ -888,11 +924,6 @@ bool TaskbarDCompRenderer::render(const TaskbarConfig& config, const TaskbarLyri
     safe_release(control_button_brush);
     safe_release(control_icon_brush);
     safe_release(control_format);
-    safe_release(glass_bottom_edge_brush);
-    safe_release(glass_highlight_brush);
-    safe_release(glass_inner_brush);
-    safe_release(glass_border_brush);
-    safe_release(glass_fill_brush);
     safe_release(glow_brush);
     safe_release(shadow_brush);
     safe_release(sub_brush);
@@ -918,6 +949,7 @@ std::wstring TaskbarDCompRenderer::snapshot_json() const {
 }
 
 void TaskbarDCompRenderer::release_device_resources() {
+    release_glass_brushes();
     safe_release(target_bitmap_);
     safe_release(swap_chain_);
     safe_release(dcomp_visual_);
